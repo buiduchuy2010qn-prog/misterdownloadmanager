@@ -1,0 +1,112 @@
+# FDM Modern: Inspired by Free Download Manager 6.x clean, flat, modern interface
+name = "FDM Modern"
+icon-set = "breeze"
+icons = "color"
+
+[controls]
+field-focus = "border"
+check = "fluent"
+button = "fluent"
+progress = "bar"
+scroll = "overlay"
+focus = "ring"
+caption = "system"
+
+[sizes]
+radius = 6
+"radius.button" = 6
+"radius.part" = 4
+"radius.check" = 4
+"radius.flyout" = 8
+"radius.menu-item" = 5
+"radius.popup" = 6
+"radius.egui" = 6
+"list.row" = 22
+"list.header" = 28
+"font.ui" = 12.5
+"font.ui.bold" = 13.5
+"font.dialog" = 11.5
+
+[seeds.light]
+background = "#f4f6f9"
+surface = "#ffffff"
+header = "#f8fafc"
+text = "#1e293b"
+accent = "#2b88d8"
+selection = "#e0f2fe"
+error = "#e11d48"
+warning = "#d97706"
+success = "#16a34a"
+
+[seeds.dark]
+background = "#181a1f"
+surface = "#21252b"
+header = "#1c1f26"
+text = "#e2e8f0"
+accent = "#3898ec"
+selection = "#1e3a5f"
+error = "#fb7185"
+warning = "#fbbf24"
+success = "#4ade80"
+
+[light]
+window = "#f4f6f9"
+menubar = "#f4f6f9"
+"menubar.bottom" = "#f4f6f9"
+"menubar.line" = "#e2e8f0"
+"toolbar.line" = "#f4f6f9"
+"toolbar.line.light" = "#f4f6f9"
+"toolbar.hot" = "#e0f2fe"
+"toolbar.pressed" = "#bae6fd"
+"toolbar.hot.edge" = "#7dd3fc"
+"toolbar.hot.border" = "#7dd3fc"
+list = "#ffffff"
+"list.frame" = "#e2e8f0"
+"list.grid" = "#f1f5f9"
+header = "#f8fafc"
+"header.sep" = "#e2e8f0"
+"header.line" = "#e2e8f0"
+"header.sorted" = "#eff6ff"
+tree = "#f8fafc"
+"tree.frame" = "#e2e8f0"
+selection = "#2b88d8"
+"selection.text" = "#ffffff"
+"selection.inactive" = "#e2e8f0"
+"progress.bar" = "#2b88d8"
+"progress.track" = "#e2e8f0"
+"meter.fill" = "#16a34a"
+"meter.track" = "#e2e8f0"
+"chip.web" = "#0284c7"
+"chip.torrent" = "#7c3aed"
+"focus.ring" = "#2b88d8bf"
+
+[dark]
+window = "#181a1f"
+menubar = "#181a1f"
+"menubar.bottom" = "#181a1f"
+"menubar.line" = "#282c34"
+"toolbar.line" = "#181a1f"
+"toolbar.line.light" = "#181a1f"
+"toolbar.hot" = "#253346"
+"toolbar.pressed" = "#1e2c3d"
+"toolbar.hot.edge" = "#3898ec"
+"toolbar.hot.border" = "#3898ec"
+list = "#21252b"
+"list.frame" = "#2c313a"
+"list.grid" = "#282c34"
+header = "#1c1f26"
+"header.sep" = "#2c313a"
+"header.line" = "#2c313a"
+"header.sorted" = "#252b37"
+tree = "#1c1f26"
+"tree.frame" = "#2c313a"
+selection = "#2563eb"
+"selection.text" = "#ffffff"
+"selection.inactive" = "#2c313a"
+"progress.bar" = "#3898ec"
+"progress.track" = "#2c313a"
+"meter.fill" = "#22c55e"
+"meter.track" = "#2c313a"
+"chip.web" = "#0284c7"
+"chip.torrent" = "#7c3aed"
+"focus.ring" = "#3898ecbf"
