@@ -1,0 +1,53 @@
+# Legal Notice, Copyright & Licensing / Thông Báo Pháp Lý, Bản Quyền & Giấy Phép
+
+---
+
+## 🇬🇧 English (Official Legal Notice under GNU GPL v3.0)
+
+### 1. Copyright Attribution
+* **Original Work:** **Mister Download Manager (MDM)**
+  * **Copyright (C) 2026 Ahmed Nefzaoui** ([anefzaoui/misterdownloadmanager](https://github.com/anefzaoui/misterdownloadmanager))
+* **Fork, Modifications & Enhancements:**
+  * **Copyright (C) 2026 Bùi Đức Huy (uiduchuy2010qn-prog)** ([buiduchuy2010qn-prog/misterdownloadmanager](https://github.com/buiduchuy2010qn-prog/misterdownloadmanager))
+
+### 2. Notice of Modification (Pursuant to Section 5(a) of the GNU GPL v3.0)
+This repository (uiduchuy2010qn-prog/misterdownloadmanager) is an independent fork and modified derivative distribution of **Mister Download Manager**, forked and maintained starting on **November 10, 2026**.
+
+In compliance with **Section 5(a)** and **Section 7** of the GNU General Public License v3.0:
+1. All original copyright notices, credits, and clean-room guarantees from the upstream project are preserved in full.
+2. Any modifications, custom features, translations, or build configurations introduced in this repository are maintained independently by **Bùi Đức Huy (uiduchuy2010qn-prog)** and do not imply endorsement by or affiliation with the original author (**Ahmed Nefzaoui**).
+
+### 3. License Grant (Pursuant to Section 5(c) of the GNU GPL v3.0)
+This program—including both the upstream source code and all modifications contained in this repository—is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version (GPL-3.0-or-later)**.
+
+* Full license text: see [LICENSE](LICENSE).
+* Third-party libraries, icons, and assets: see [ATTRIBUTION.md](ATTRIBUTION.md).
+
+### 4. Disclaimer of Warranty & Limitation of Liability (Sections 15 & 16 of the GNU GPL v3.0)
+This program is distributed in the hope that it will be useful, but **WITHOUT ANY WARRANTY**; without even the implied warranty of **MERCHANTABILITY** or **FITNESS FOR A PARTICULAR PURPOSE**. See the [GNU General Public License v3.0](LICENSE) for more details.
+
+---
+
+## 🇻🇳 Tiếng Việt (Tuyên Bố Bản Quyền & Giấy Phép Pháp Lý theo chuẩn GNU GPL v3.0)
+
+### 1. Thông tin Chủ sở hữu Bản quyền
+* **Tác phẩm & Mã nguồn gốc:** **Mister Download Manager (MDM)**
+  * **Bản quyền gốc (C) 2026 Ahmed Nefzaoui** ([anefzaoui/misterdownloadmanager](https://github.com/anefzaoui/misterdownloadmanager))
+* **Bản phân nhánh (Fork), Tuỳ biến & Nâng cấp:**
+  * **Bản quyền phần sửa đổi/nâng cấp (C) 2026 Bùi Đức Huy (uiduchuy2010qn-prog)** ([buiduchuy2010qn-prog/misterdownloadmanager](https://github.com/buiduchuy2010qn-prog/misterdownloadmanager))
+
+### 2. Thông báo về Bản sửa đổi (Tuân thủ Mục 5(a) & Mục 7 của Giấy phép GPL-3.0)
+Kho lưu trữ này (uiduchuy2010qn-prog/misterdownloadmanager) là phiên bản phân nhánh (fork) và phát triển mở rộng độc lập dựa trên dự án mã nguồn mở **Mister Download Manager**, được khởi tạo từ ngày **10/11/2026**.
+
+Theo đúng quy định pháp lý của **GNU GPL v3.0**:
+1. Toàn bộ thông tin bản quyền của tác giả gốc (**Ahmed Nefzaoui**) và danh sách ghi công bên thứ ba trong [ATTRIBUTION.md](ATTRIBUTION.md) được giữ nguyên vẹn.
+2. Các bản vá, tính năng nâng cấp, tuỳ chỉnh giao diện hoặc bản dựng phát sinh trong kho lưu trữ này thuộc trách nhiệm quản lý độc lập của **Bùi Đức Huy (uiduchuy2010qn-prog)**, hoàn toàn tách biệt và không đại diện cho tác giả gốc.
+
+### 3. Điều khoản Cấp phép (Mục 5(c) của Giấy phép GPL-3.0)
+Phần mềm này (bao gồm mã nguồn gốc và mọi bản nâng cấp/chỉnh sửa trong repo này) là phần mềm tự do mã nguồn mở được cấp phép theo **Giấy phép Công cộng GNU phiên bản 3.0 hoặc bất kỳ phiên bản nào mới hơn (GPL-3.0-or-later)**:
+* Bạn được phép sao chép, chỉnh sửa, sử dụng và phân phối lại với điều kiện phải giữ nguyên giấy phép **GPL-3.0**, đính kèm mã nguồn tương ứng khi phân phối file thực thi (.exe), và giữ đầy đủ thông báo bản quyền của tác giả gốc cũng như người sửa đổi.
+* Toàn văn giấy phép pháp lý: xem tại [LICENSE](LICENSE).
+* Bản quyền các thư viện và biểu tượng bên thứ ba: xem tại [ATTRIBUTION.md](ATTRIBUTION.md).
+
+### 4. Miễn trừ Trách nhiệm Bảo hành (Mục 15 & 16 của Giấy phép GPL-3.0)
+Phần mềm được cung cấp **"NGUYÊN TRẠNG" (AS IS)** mà **KHÔNG CÓ BẤT KỲ SỰ BẢO ĐẢM NÀO**, dù明 thị hay ngụ ý, bao gồm nhưng không giới hạn ở sự bảo đảm về khả năng thương mại hoặc sự phù hợp cho một mục đích cụ thể. Xem chi tiết tại [LICENSE](LICENSE).
