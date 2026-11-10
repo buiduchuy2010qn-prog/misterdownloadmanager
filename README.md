@@ -492,8 +492,12 @@ changes or unlocks, and there is no paid edition.
 
 ## Licence and credits
 
-Copyright (c) 2026 Ahmed Nefzaoui. Mister Download Manager is free software under the
-[GNU General Public License, version 3](LICENSE) or (at your option) any later version.
+* **Original Work:** Copyright (c) 2026 Ahmed Nefzaoui ([anefzaoui/misterdownloadmanager](https://github.com/anefzaoui/misterdownloadmanager)).
+* **Fork, Modifications & Enhancements:** Copyright (c) 2026 Bùi Đức Huy ([uiduchuy2010qn-prog](https://github.com/buiduchuy2010qn-prog/misterdownloadmanager)).
+
+Mister Download Manager (and this modified fork distribution) is free software licensed under the
+[GNU General Public License, version 3](LICENSE) or (at your option) any later version (GPL-3.0-or-later).
+See [**NOTICE.md**](NOTICE.md) for the official GPL-3.0 Section 5 modification statement and bilingual legal notice (English / Tiếng Việt).
 
 Built on [egui](https://github.com/emilk/egui) through
 [storytold's forks](https://github.com/storytold/egui) and
