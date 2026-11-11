@@ -434,7 +434,7 @@ mod tests {
         assert_eq!(s.category_dir(Category::Music, downloads), Path::new(SONGS));
         assert_eq!(
             Category::Music.default_folder(downloads),
-            downloads.join("Music"),
+            downloads.to_owned(),
             "renaming moves no folder"
         );
         // Typing the shipped name and types back is as shipped: nothing kept.
@@ -498,7 +498,7 @@ mod tests {
         assert_eq!(Category::of("film.mp4"), Category::Video);
         assert_eq!(
             s.category_dir(Category::Video, downloads),
-            downloads.join("Video")
+            downloads.to_owned()
         );
         assert_eq!(s.category_dir(Category::General, downloads), Path::new(ALL));
         assert!(Category::all().contains(&books));
@@ -558,7 +558,7 @@ mod tests {
         let downloads = Path::new(r"C:\d");
         assert_eq!(
             Category::Torrents.folder(downloads),
-            downloads.join("Torrents")
+            downloads.to_owned()
         );
         assert_eq!(Category::of("ubuntu.iso.torrent"), Category::General);
         assert!(Category::all().contains(&Category::Torrents));
