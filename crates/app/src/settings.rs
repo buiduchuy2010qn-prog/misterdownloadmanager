@@ -393,7 +393,7 @@ impl Default for Settings {
             capture_min_kb: 0,
             regional: crate::regional::Regional::default(),
             category_dirs: Vec::new(),
-            change_folder_on_last: true,
+            change_folder_on_last: false,
             url_history: Vec::new(),
             folder_history: Vec::new(),
             set_creation_date: false,
