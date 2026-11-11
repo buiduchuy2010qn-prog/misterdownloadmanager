@@ -912,10 +912,12 @@ pub fn show(
                     winui::SELECTED_INACTIVE(),
                 );
             }
+            let icon_y = top + ((row_h() - 16.0) / 2.0).floor().max(0.0);
+            let text_y = top + ((row_h() + 7.0) / 2.0).floor();
             for (c, x0, x1) in &cols {
                 // The file-type icon sits in the File Name column, wherever it is.
                 let tx = if *c == 0 {
-                    icons.paint_in(ui, &bp, row.icon.clone(), pos2(x0 + 4.0, top));
+                    icons.paint_in(ui, &bp, row.icon.clone(), pos2(x0 + 4.0, icon_y));
                     x0 + 22.0
                 } else {
                     x0 + 6.0
@@ -925,7 +927,7 @@ pub fn show(
                         ui,
                         &bp,
                         IconKey::Silk("page_white_stack"),
-                        pos2(x0 + 2.0, top),
+                        pos2(x0 + 2.0, icon_y),
                     );
                 }
                 let cell = Rect::from_min_max(pos2(*x0, top), pos2(*x1 - 1.0, top + row_h()));
@@ -967,6 +969,30 @@ pub fn show(
                     }
                 }
                 let clip = bp.with_clip_rect(screen(cell.intersect(body)));
+                if *c == 3
+                    && let Some(pct) = status_percent(&row.cells[*c])
+                    && x1 - x0 > 12.0
+                {
+                    let bar_w = (x1 - x0 - 8.0).max(0.0);
+                    let track = Rect::from_min_size(
+                        pos2(x0 + 4.0, top + row_h() - 4.0),
+                        egui::vec2(bar_w, 2.0),
+                    );
+                    clip.rect_filled(
+                        screen(track),
+                        1.0,
+                        crate::theme::colors().meter_track,
+                    );
+                    let fill_rect = Rect::from_min_size(
+                        pos2(x0 + 4.0, top + row_h() - 4.0),
+                        egui::vec2((bar_w * pct).round(), 2.0),
+                    );
+                    clip.rect_filled(
+                        screen(fill_rect),
+                        1.0,
+                        crate::theme::colors().progress_bar,
+                    );
+                }
                 // A failed download's Status and Description (the reason) in the error colour.
                 let failed = row.status_group == "Error" && (*c == 3 || *c == 7);
                 let ink = if sel {
@@ -976,7 +1002,7 @@ pub fn show(
                 } else {
                     TEXT()
                 };
-                text_font(&clip, font.clone(), tx, top + 12.0, &s, ink);
+                text_font(&clip, font.clone(), tx, text_y, &s, ink);
             }
         }
         // The grid line is the item's own last row (top + 16), so icons are not clipped; in
@@ -1258,20 +1284,31 @@ fn chip(
     // Room: the pill starts 5 px in, pads its text 6 px each side, and ends 3 px before the cell.
     let label = &winui::ellipsize(p, font, full, (x1 - x0 - 5.0 - 12.0 - 3.0).max(0.0));
     let w = winui::text_width_font(p, font.clone(), label).round();
-    let pill = Rect::from_min_size(
-        pos2(x0 + 5.0, top + 2.0),
-        egui::vec2(w + 12.0, row_h() - 4.0),
-    );
-    p.rect_filled(winui::rect(pill), (row_h() - 4.0) / 2.0, fill);
+    let pill_h = (row_h() - 4.0).min(15.0);
+    let pill_top = top + ((row_h() - pill_h) / 2.0).floor();
+    let pill = Rect::from_min_size(pos2(x0 + 5.0, pill_top), egui::vec2(w + 12.0, pill_h));
+    p.rect_filled(winui::rect(pill), pill_h / 2.0, fill);
     text_font(
         p,
         font.clone(),
         pill.left() + 6.0,
-        top + 12.0,
+        top + ((row_h() + 7.0) / 2.0).floor(),
         label,
         crate::theme::colors().chip_text,
     );
     label != full
+}
+
+fn status_percent(s: &str) -> Option<f32> {
+    if !s.contains('%') {
+        return None;
+    }
+    let num: String = s
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ',')
+        .map(|c| if c == ',' { '.' } else { c })
+        .collect();
+    num.parse::<f32>().ok().map(|v| (v / 100.0).clamp(0.0, 1.0))
 }
 
 /// Where a column's funnel sits in its header: at the right, left of the sort chevron.
