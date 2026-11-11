@@ -353,7 +353,7 @@ impl Default for Settings {
             global_limit_kb: 500,
             global_only_active: false,
             max_connections: 16,
-            many_connections: true,
+            many_connections: false,
             show_complete: false,
             double_click_open: true,
             confirm_delete: true,
@@ -1160,7 +1160,7 @@ mod tests {
         };
         let url = |u: &str| url::Url::parse(u).unwrap();
         assert_eq!(s.connections_for(&url("ftp://ftp.slow.org/a")), 1);
-        assert_eq!(s.connections_for(&url("https://fast.org/a")), 8);
+        assert_eq!(s.connections_for(&url("https://fast.org/a")), 16);
         // Beyond 32 only once allowed (issue #12), and never beyond 128.
         s.max_connections = 100;
         s.conn_exceptions.push(("big.org".into(), 500));
