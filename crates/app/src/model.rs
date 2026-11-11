@@ -290,16 +290,14 @@ impl Category {
         }
     }
 
-    /// The folder it has when none was chosen: `Downloads\<name>` (General: `Downloads\`).
+    /// The folder it has when none was chosen: always `Downloads\` for built-in categories (FDM style).
     pub fn default_folder(self, downloads: &Path) -> PathBuf {
         match self {
-            Category::General => downloads.to_owned(),
             Category::Custom(id) => match custom(id) {
                 Some(c) => downloads.join(mdm_engine::naming::sanitize(&c.name)),
                 None => downloads.to_owned(),
             },
-            // The shipped name, whatever it is called now: renaming doesn't move a folder.
-            c => downloads.join(c.key().as_ref()),
+            _ => downloads.to_owned(),
         }
     }
 }
