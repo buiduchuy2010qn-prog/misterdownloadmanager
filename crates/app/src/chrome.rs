@@ -1407,7 +1407,131 @@ pub enum ToolbarEvent {
 /// Paint the etch (y 20, 21) and the toolbar band (y 22–91).
 /// Client y where the panes (Categories, list) start: below the toolbar band, in both modes.
 pub fn pane_top() -> f32 {
-    70.0
+    if crate::theme::metrics().list_row > 18.0 {
+        46.0
+    } else {
+        70.0
+    }
+}
+
+fn toolbar_modern(
+    ui: &mut Ui,
+    o: Pos2,
+    width: f32,
+    buttons: &[(Icon, &str, bool)],
+) -> Option<ToolbarEvent> {
+    let p = ui.painter().clone();
+    let top = o.y + MENU_H;
+    let c = crate::theme::colors();
+    let band_h = 44.0;
+    let band = Rect::from_min_size(pos2(o.x, top), vec2(width, band_h));
+    p.rect_filled(band, 0.0, WINDOW_BG());
+    let btn_h = 30.0;
+    let btn_y = top + 7.0;
+    let radius = crate::theme::metrics().button_radius.max(6.0);
+    let mut x = o.x + 8.0;
+    let mut event = None;
+    let is_dropdown =
+        |icon: &Icon| matches!(icon, Icon::StartQueue | Icon::StopQueue | Icon::AddTorrent);
+    for (i, (icon, label, enabled)) in buttons.iter().enumerate() {
+        let full = crate::i18n::tc("toolbar", label);
+        if i == 0 {
+            let font = winui::tahoma_bold();
+            let ext = text_width_font(&p, font.clone(), full).round();
+            let bw = 28.0 + ext + 12.0;
+            let rc = winui::rect(Rect::from_min_size(pos2(x, btn_y), vec2(bw, btn_h)));
+            let resp = ui.interact(rc, egui::Id::unique(("tb", i)), winui::pointer_only());
+            let bg = if resp.is_pointer_button_down_on() {
+                c.button_accent_pressed
+            } else if resp.hovered() {
+                c.button_accent_hot
+            } else {
+                c.button_accent
+            };
+            p.rect_filled(rc, radius, bg);
+            let fg = c.button_accent_text;
+            let cx = x + 15.0;
+            let cy = btn_y + 15.0;
+            winui::fill_l(&p, cx - 5.0, cy - 1.0, cx + 5.0, cy, fg);
+            winui::fill_l(&p, cx - 1.0, cy - 5.0, cx, cy + 5.0, fg);
+            let ty = btn_y + ((btn_h + 7.0) / 2.0).floor();
+            text_font(&p, font, x + 26.0, ty, full, fg);
+            if resp.clicked() && *enabled {
+                event = Some(ToolbarEvent::Click(i));
+            }
+            x += bw + 6.0;
+            continue;
+        }
+        if matches!(icon, Icon::Resume | Icon::Delete | Icon::Scheduler) {
+            winui::fill_l(&p, x + 2.0, btn_y + 6.0, x + 2.0, btn_y + 23.0, c.menubar_line);
+            x += 9.0;
+        }
+        let dropdown = is_dropdown(icon);
+        let bw = 32.0;
+        let total = bw + if dropdown { 14.0 } else { 0.0 };
+        let dock_right = matches!(icon, Icon::Options) && (o.x + width - 8.0 - total > x + 96.0);
+        let bx = if dock_right {
+            o.x + width - 8.0 - total
+        } else {
+            x
+        };
+        let rc = winui::rect(Rect::from_min_size(pos2(bx, btn_y), vec2(total, btn_h)));
+        let resp = ui
+            .interact(rc, egui::Id::unique(("tb", i)), winui::pointer_only())
+            .on_hover_text(full);
+        let past_button = |q: Pos2| winui::mx(q.x) >= bx + bw;
+        let on_arrow = dropdown && resp.hover_pos().is_some_and(past_button);
+        if resp.hovered() && (*enabled || dropdown) {
+            let down = resp.is_pointer_button_down_on();
+            let fill_c = if down { c.toolbar_pressed } else { c.toolbar_hot };
+            p.rect_filled(rc, radius, fill_c);
+            p.rect_stroke(
+                rc,
+                radius,
+                Stroke::new(1.0, c.toolbar_hot_border),
+                egui::StrokeKind::Inside,
+            );
+            if dropdown {
+                winui::fill_l(
+                    &p,
+                    bx + bw - 1.0,
+                    btn_y + 5.0,
+                    bx + bw - 1.0,
+                    btn_y + btn_h - 6.0,
+                    c.toolbar_hot_edge,
+                );
+            }
+            let _ = on_arrow;
+        }
+        let icon_rc = Rect::from_center_size(pos2(bx + bw / 2.0, btn_y + btn_h / 2.0), vec2(20.0, 20.0));
+        icon.image(*enabled).paint_at(ui, winui::rect(icon_rc));
+        if dropdown {
+            let ax = bx + bw + 3.0;
+            let ay = btn_y + 13.0;
+            for (row, half) in [3.0f32, 2.0, 1.0, 0.0].iter().enumerate() {
+                winui::fill_l(
+                    &p,
+                    ax + 3.0 - half,
+                    ay + row as f32,
+                    ax + 3.0 + half,
+                    ay + row as f32,
+                    TB_ARROW(),
+                );
+            }
+        }
+        let click_arrow = dropdown && resp.interact_pointer_pos().is_some_and(past_button);
+        if resp.clicked() && (*enabled || click_arrow) {
+            event = Some(if click_arrow {
+                ToolbarEvent::Drop(i, pos2(winui::mx(bx), btn_y + btn_h + 2.0))
+            } else {
+                ToolbarEvent::Click(i)
+            });
+        }
+        if !dock_right {
+            x += total + 3.0;
+        }
+    }
+    event
 }
 
 pub fn toolbar(
@@ -1416,6 +1540,9 @@ pub fn toolbar(
     width: f32,
     buttons: &[(Icon, &str, bool)],
 ) -> Option<ToolbarEvent> {
+    if crate::theme::metrics().list_row > 18.0 {
+        return toolbar_modern(ui, o, width, buttons);
+    }
     let p = ui.painter().clone();
     let top = o.y + MENU_H;
     let c = crate::theme::colors();
@@ -1807,8 +1934,11 @@ pub fn categories(
     let mut selected_at: Option<(usize, Pos2)> = None;
 
     // Connector dots (#6d6d6d, every other pixel), painted first; expander boxes cover them.
+    let modern_tree = crate::theme::metrics().list_row > 18.0;
     let roots: Vec<usize> = (0..rows.len()).filter(|&k| rows[k].level == 0).collect();
-    if let (Some(&first), Some(&last)) = (roots.first(), roots.last()) {
+    if !modern_tree
+        && let (Some(&first), Some(&last)) = (roots.first(), roots.last())
+    {
         let mut y = row_top(first);
         while y <= row_top(last) + 8.0 {
             if (y - tree.top()) as i32 % 2 == 0 {
@@ -1825,7 +1955,7 @@ pub fn categories(
         }
     }
     for (k, r) in rows.iter().enumerate() {
-        if r.level == 1 {
+        if !modern_tree && r.level == 1 {
             let mut x = o.x + 38.0;
             while x <= o.x + 48.0 {
                 winui::px_l(&tp, x, row_top(k) + 8.0, TREE_LINES());
