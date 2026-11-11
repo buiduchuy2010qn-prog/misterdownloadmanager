@@ -517,8 +517,19 @@ pub fn show(
         outer.right() - 1.0,
         outer.bottom() - 1.0,
     );
-    winui::solid(&p, screen(outer), FRAME());
-    fill(&p, l + 1.0, t + 1.0, r - 1.0, b - 1.0, BG());
+    let modern = row_h() > 18.0;
+    if modern {
+        p.rect_filled(screen(outer), 6.0, BG());
+        p.rect_stroke(
+            screen(outer),
+            6.0,
+            egui::Stroke::new(1.0, FRAME()),
+            egui::StrokeKind::Inside,
+        );
+    } else {
+        winui::solid(&p, screen(outer), FRAME());
+        fill(&p, l + 1.0, t + 1.0, r - 1.0, b - 1.0, BG());
+    }
     let (cl, ct, cr, cb) = (l + 2.0, t + 2.0, r - 2.0, b - 2.0);
     let font = winui::tahoma();
 
@@ -753,7 +764,18 @@ pub fn show(
             *x0..=*x1,
             ct..=ct + header_h(),
         )));
-        text_font(&clip, font.clone(), x0 + 6.0, ct + 15.0, &label, TEXT());
+        let hy = ct + ((header_h() + 7.0) / 2.0).floor();
+        text_font(&clip, font.clone(), x0 + 6.0, hy, &label, TEXT());
+    }
+    if modern {
+        fill(
+            &p,
+            cl,
+            ct + header_h() - 1.0,
+            rr,
+            ct + header_h() - 1.0,
+            HEADER_SEP(),
+        );
     }
 
     // ---- body ------------------------------------------------------------------------------
@@ -873,6 +895,14 @@ pub fn show(
             }
         }
     };
+    let hover_idx = resp.hover_pos().map(english).and_then(|pos| {
+        if body.contains(pos) && pos.x <= last_right {
+            let i = ((pos.y - body_top + shown_scroll) / row_h()).floor() as usize;
+            (i < rows.len()).then_some(i)
+        } else {
+            None
+        }
+    });
     expose_out_of_view(reach.start..reach.end.min(first));
     for k in 0..visible {
         let idx = first + k;
@@ -881,12 +911,37 @@ pub fn show(
             let picked = selected.get(idx).copied().unwrap_or(false);
             expose_row(idx, row, picked);
             let sel = picked && st.focused;
-            // The focused row's dotted outline only once the keyboard is in use, as every
-            // control's focus (winui::keyboard_in_use).
             let has_focus = focus == Some(idx) && st.focused && keys_in_use;
-            if sel || has_focus {
-                // The row above its grid line; the focused row has a dotted outline (every other
-                // pixel), in the fill's inverse on a selected row. Both modes alike.
+            if modern {
+                let pill_rc = Rect::from_min_max(
+                    pos2(cl + 2.0, top + 1.0),
+                    pos2(last_right - 2.0, top + row_h() - 2.0),
+                );
+                if sel {
+                    bp.rect_filled(screen(pill_rc), 5.0, SELECTED());
+                    let bar = Rect::from_min_size(
+                        pos2(cl + 3.0, top + ((row_h() - 16.0) / 2.0).floor()),
+                        egui::vec2(3.0, 16.0),
+                    );
+                    bp.rect_filled(screen(bar), 1.5, winui::accent());
+                } else if picked {
+                    bp.rect_filled(screen(pill_rc), 5.0, winui::SELECTED_INACTIVE());
+                } else if hover_idx == Some(idx) {
+                    bp.rect_filled(
+                        screen(pill_rc),
+                        5.0,
+                        crate::theme::colors().toolbar_hot_faint,
+                    );
+                }
+                if has_focus {
+                    bp.rect_stroke(
+                        screen(pill_rc),
+                        5.0,
+                        egui::Stroke::new(1.0, crate::theme::colors().focus_ring),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+            } else if sel || has_focus {
                 let (right, bottom) = (last_right - 1.0, top + row_h() - 2.0);
                 if sel {
                     fill(&bp, cl, top, right, bottom, SELECTED());
@@ -900,8 +955,6 @@ pub fn show(
                     dotted(&bp, cl, top, right, bottom, dot);
                 }
             } else if picked {
-                // Unfocused (Find, Properties, a menu has the keys): still shown, in the inactive
-                // selection grey, as Explorer shows it, so what a command acts on stays visible.
                 let bottom = top + row_h() - 2.0;
                 fill(
                     &bp,
@@ -915,10 +968,10 @@ pub fn show(
             let icon_y = top + ((row_h() - 16.0) / 2.0).floor().max(0.0);
             let text_y = top + ((row_h() + 7.0) / 2.0).floor();
             for (c, x0, x1) in &cols {
-                // The file-type icon sits in the File Name column, wherever it is.
                 let tx = if *c == 0 {
-                    icons.paint_in(ui, &bp, row.icon.clone(), pos2(x0 + 4.0, icon_y));
-                    x0 + 22.0
+                    let ix = if modern { x0 + 8.0 } else { x0 + 4.0 };
+                    icons.paint_in(ui, &bp, row.icon.clone(), pos2(ix, icon_y));
+                    if modern { x0 + 28.0 } else { x0 + 22.0 }
                 } else {
                     x0 + 6.0
                 };
@@ -950,8 +1003,6 @@ pub fn show(
                 }
                 let value = cell_text(*c, &row.cells[*c]);
                 let s = winui::ellipsize(&bp, &font, &value, x1 - tx - 3.0);
-                // A cut cell shows its whole text on hover (Windows' list label tip); the
-                // Status cell shows the download's recent events.
                 if resp
                     .hover_pos()
                     .map(english)
@@ -969,60 +1020,85 @@ pub fn show(
                     }
                 }
                 let clip = bp.with_clip_rect(screen(cell.intersect(body)));
-                if *c == 3
-                    && let Some(pct) = status_percent(&row.cells[*c])
-                    && x1 - x0 > 12.0
+                let pct_opt = if *c == 3 {
+                    status_percent(&row.cells[*c])
+                } else {
+                    None
+                };
+                let mut cell_ty = text_y;
+                if let Some(pct) = pct_opt
+                    && x1 - x0 > 16.0
                 {
-                    let bar_w = (x1 - x0 - 8.0).max(0.0);
-                    let track = Rect::from_min_size(
-                        pos2(x0 + 4.0, top + row_h() - 4.0),
-                        egui::vec2(bar_w, 2.0),
-                    );
-                    clip.rect_filled(
-                        screen(track),
-                        1.0,
-                        crate::theme::colors().meter_track,
-                    );
-                    let fill_rect = Rect::from_min_size(
-                        pos2(x0 + 4.0, top + row_h() - 4.0),
-                        egui::vec2((bar_w * pct).round(), 2.0),
-                    );
-                    clip.rect_filled(
-                        screen(fill_rect),
-                        1.0,
-                        crate::theme::colors().progress_bar,
-                    );
+                    if modern {
+                        cell_ty = top + 14.0;
+                        let bar_w = (x1 - tx - 8.0).max(0.0);
+                        let track =
+                            Rect::from_min_size(pos2(tx, top + 19.0), egui::vec2(bar_w, 5.0));
+                        clip.rect_filled(
+                            screen(track),
+                            2.5,
+                            crate::theme::colors().meter_track,
+                        );
+                        let fw = (bar_w * pct).round();
+                        if fw > 0.0 {
+                            let fill_rc =
+                                Rect::from_min_size(pos2(tx, top + 19.0), egui::vec2(fw, 5.0));
+                            clip.rect_filled(
+                                screen(fill_rc),
+                                2.5,
+                                crate::theme::colors().progress_bar,
+                            );
+                        }
+                    } else {
+                        let bar_w = (x1 - x0 - 8.0).max(0.0);
+                        let track = Rect::from_min_size(
+                            pos2(x0 + 4.0, top + row_h() - 4.0),
+                            egui::vec2(bar_w, 2.0),
+                        );
+                        clip.rect_filled(
+                            screen(track),
+                            1.0,
+                            crate::theme::colors().meter_track,
+                        );
+                        let fill_rect = Rect::from_min_size(
+                            pos2(x0 + 4.0, top + row_h() - 4.0),
+                            egui::vec2((bar_w * pct).round(), 2.0),
+                        );
+                        clip.rect_filled(
+                            screen(fill_rect),
+                            1.0,
+                            crate::theme::colors().progress_bar,
+                        );
+                    }
                 }
-                // A failed download's Status and Description (the reason) in the error colour.
                 let failed = row.status_group == "Error" && (*c == 3 || *c == 7);
+                let done = modern && row.status_group == "Complete" && *c == 3;
                 let ink = if sel {
                     winui::SELECTION_TEXT()
                 } else if failed {
                     winui::ERROR()
+                } else if done {
+                    crate::theme::colors().meter_fill
                 } else {
                     TEXT()
                 };
-                text_font(&clip, font.clone(), tx, text_y, &s, ink);
+                text_font(&clip, font.clone(), tx, cell_ty, &s, ink);
             }
         }
-        // The grid line is the item's own last row (top + 16), so icons are not clipped; in
-        // both modes (dark changes only colours).
         let gy = top + row_h() - 1.0;
-        // An empty list has no grid (the empty state stands alone).
         if !rows.is_empty() {
             fill(&bp, cl, gy, rr, gy, GRID_H());
         }
     }
     expose_out_of_view(reach.start.max(first + visible)..reach.end);
     if let Some(full) = cut_under_pointer {
-        // At the pointer: the list is one widget, and a tip placed by it showed under its
-        // bottom edge, far from the row.
         resp.clone().on_hover_text_at_pointer(full);
     }
     filter_box(ui, st);
-    for (_, _, x1) in cols.iter().filter(|_| !rows.is_empty()) {
-        // One line at col.right + 1.
-        fill(&bp, x1 + 1.0, body_top, x1 + 1.0, rb, GRID_V_RIGHT());
+    if !modern {
+        for (_, _, x1) in cols.iter().filter(|_| !rows.is_empty()) {
+            fill(&bp, x1 + 1.0, body_top, x1 + 1.0, rb, GRID_V_RIGHT());
+        }
     }
     // While a column is dragged: a translucent copy of its header follows the pointer, and a
     // 2 px mark shows where it will land.
@@ -1316,7 +1392,8 @@ fn funnel_rect(st: &ListState, col: usize, x0: f32, x1: f32, ct: f32) -> Rect {
     let sorted = st.sort.is_some_and(|(sc, _)| sc == col);
     let right = x1 - if sorted { 18.0 } else { 4.0 };
     let left = (right - 12.0).max(x0 + 2.0);
-    Rect::from_min_max(pos2(left, ct + 6.0), pos2(right, ct + header_h() - 6.0))
+    let fy = ct + ((header_h() - 12.0) / 2.0).floor();
+    Rect::from_min_max(pos2(left, fy), pos2(right, fy + 12.0))
 }
 
 /// A small funnel: a triangle over a stem, in English rect `rc`.
