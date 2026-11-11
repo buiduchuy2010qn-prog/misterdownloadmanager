@@ -112,6 +112,13 @@ pub fn list() -> Vec<Entry> {
             path: Some(path),
         });
     }
+    if !out.iter().any(|e| e.id == "fdm-modern") {
+        out.push(Entry {
+            id: "fdm-modern".into(),
+            name: "FDM Modern".into(),
+            path: Some(PathBuf::from("builtin:fdm-modern")),
+        });
+    }
     out
 }
 
@@ -232,6 +239,15 @@ fn load_in(folder: &Path, id: &str, depth: usize) -> Result<Loaded, String> {
         .map(|ext| folder.join(format!("{id}.{ext}")))
         .find(|p| p.is_file())
         .or_else(|| folder_file(&own));
+    if found.is_none() && id == "fdm-modern" {
+        return Ok(Loaded {
+            theme: builtin(
+                "fdm-modern",
+                include_str!("../assets/themes/fdm-modern.toml"),
+            ),
+            warnings: Vec::new(),
+        });
+    }
     // pywal's colours where `wal` writes them, when no file in the folder has the name.
     let wal = if found.is_none() && id == PYWAL {
         pywal_file().filter(|p| p.is_file())
