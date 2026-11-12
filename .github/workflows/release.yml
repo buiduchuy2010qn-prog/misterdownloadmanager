@@ -106,7 +106,9 @@ jobs:
         shell: pwsh
         env:
           MDM_SIGN_COMMAND: ${{ steps.cert.outputs.command }}
-        run: ./tools/installer/build.ps1
+        run: |
+          Remove-Item target/dist/* -Force -ErrorAction SilentlyContinue
+          ./tools/installer/build.ps1
 
       # Crash reports: the release's symbols (dump_syms reads each program's .pdb beside it; no
       # download includes the .pdb files themselves).
@@ -356,7 +358,7 @@ jobs:
           $notesBody = if ($m.Success -and $m.Groups[1].Value.Trim()) {
             $m.Groups[1].Value.Trim() -replace '\]\((?![a-z]+:|#)([^)\s]+)\)', "](https://github.com/${{ github.repository }}/blob/$tag/`$1)"
           } else {
-            "## Mister Download Manager $tag`n- Intuitive FDM 6.x full-width modern UI with inline Pause/Resume/Folder controls, state-colored progress bars, and clean compact size/speed display`n- Native Win32 ShellExecuteW + ProgId association file opener fix`n- Cryptographically signed Ed25519 in-app OTA auto-updater (ota.json CDN + GitHub Releases)"
+            "## Mister Download Manager $tag`n- Responsive FDM 6.x compact and maximized layout (zero horizontal scrollbar, full downloaded/total size, compact percentage status pills, unclipped speed and ETA)`n- Intuitive inline Pause/Resume/Folder controls and state-colored progress bars`n- Native Win32 ShellExecuteW + ProgId association file opener fix`n- Cryptographically signed Ed25519 in-app OTA auto-updater (ota.json CDN + GitHub Releases)"
           }
           [IO.File]::WriteAllBytes("notes.md", [Text.UTF8Encoding]::new($false).GetBytes($notesBody))
 

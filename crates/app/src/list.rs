@@ -323,6 +323,88 @@ impl ListState {
     }
 }
 
+/// Responsive column set and pixel widths for `avail_w`.
+/// In classic mode (`!modern`), returns `st.shown()` and `st.widths` untouched.
+/// In modern mode, collapses low-priority columns in compact windows (unless filtered)
+/// and flexes `File Name` (slot 0) so active columns never truncate or overflow horizontally.
+fn layout_for_width(st: &ListState, avail_w: f32, modern: bool) -> (Vec<usize>, [f32; COLS]) {
+    let base_shown = st.shown();
+    let mut w = st.widths;
+    if !modern || avail_w <= 0.0 {
+        return (base_shown, w);
+    }
+    let dragging_col = match st.drag {
+        Some(HeaderDrag::Resize { col, .. }) => Some(col),
+        _ => None,
+    };
+    let shown: Vec<usize> = base_shown
+        .into_iter()
+        .filter(|&c| {
+            if c == 0 || st.filters[c].is_some() || dragging_col == Some(c) {
+                return true;
+            }
+            if avail_w < 980.0 && matches!(c, ADDED | 6 | 7 | PEERS | RATIO | UPLOAD) {
+                return false;
+            }
+            if avail_w < 820.0 && matches!(c, SOURCE | 1) {
+                return false;
+            }
+            if avail_w < 660.0 && c == 4 {
+                return false;
+            }
+            if avail_w < 540.0 && c == 5 {
+                return false;
+            }
+            true
+        })
+        .collect();
+
+    let roomy = avail_w >= 1100.0;
+    let mins: [(usize, f32); 6] = [
+        (2, if roomy { 148.0 } else { 134.0 }),
+        (3, if roomy { 132.0 } else { 106.0 }),
+        (4, if roomy { 125.0 } else { 110.0 }),
+        (5, if roomy { 120.0 } else { 110.0 }),
+        (ADDED, 155.0),
+        (SOURCE, 62.0),
+    ];
+    for (col, min_w) in mins {
+        if shown.contains(&col) && dragging_col != Some(col) && w[col] < min_w {
+            w[col] = min_w;
+        }
+    }
+
+    let other_sum: f32 = shown.iter().filter(|&&c| c != 0).map(|&c| w[c]).sum();
+    let min_name_w = if avail_w >= 820.0 { 260.0 } else { 244.0 };
+    if other_sum + min_name_w > avail_w {
+        let mut trim = (other_sum + min_name_w) - avail_w;
+        for (col, floor_w) in [
+            (3usize, 104.0f32),
+            (5, 106.0),
+            (4, 106.0),
+            (2, 132.0),
+            (ADDED, 145.0),
+            (SOURCE, 58.0),
+        ] {
+            if shown.contains(&col)
+                && dragging_col != Some(col)
+                && w[col] > floor_w
+                && trim > 0.0
+            {
+                let cut = (w[col] - floor_w).min(trim);
+                w[col] -= cut;
+                trim -= cut;
+            }
+        }
+    }
+
+    let final_other: f32 = shown.iter().filter(|&&c| c != 0).map(|&c| w[c]).sum();
+    if shown.contains(&0) && dragging_col != Some(0) {
+        w[0] = (avail_w - final_other).round().max(150.0);
+    }
+    (shown, w)
+}
+
 pub struct Row {
     /// What the Status filter sees: Downloading, Stopped, Waiting, Complete or Error.
     pub status_group: &'static str,
@@ -547,56 +629,34 @@ pub fn show(
 
     // Scroll bars (notes/ui-spec/scrollbars.md), decided like Win32: each one shows when the
     // content overflows the room the other one leaves.
-    let content_w: f32 = st.shown().iter().map(|c| st.widths[*c]).sum();
     let (client_w, client_h) = (cr - cl + 1.0, cb - ct + 1.0);
     let rows_h = rows.len() as f32 * row_h();
     let menu_key = keyboard(ui, st, rows, focus, client_h, &mut out);
     let (mut need_v, mut need_h) = (false, false);
     for _ in 0..2 {
+        let avail_w = client_w - if need_v { scrollbar::THICK } else { 0.0 };
+        let (sc, ew) = layout_for_width(st, avail_w, modern);
+        let cw: f32 = sc.iter().map(|c| ew[*c]).sum();
         // An empty list has nothing to scroll to (its empty state is centred in the view).
-        need_h =
-            !rows.is_empty() && content_w > client_w - if need_v { scrollbar::THICK } else { 0.0 };
+        need_h = !rows.is_empty() && cw > avail_w + 0.5;
         need_v = rows_h > client_h - header_h() - if need_h { scrollbar::THICK } else { 0.0 };
     }
     // Inclusive right edge of the header and rows, and bottom of the rows.
     let rr = cr - if need_v { scrollbar::THICK } else { 0.0 };
     let rb = cb - if need_h { scrollbar::THICK } else { 0.0 };
     let row_w = rr - cl + 1.0;
-    st.hscroll = st.hscroll.clamp(0.0, (content_w - row_w).max(0.0)).round();
-
-    let effective_widths = |st: &ListState| -> [f32; COLS] {
-        let mut w = st.widths;
-        if modern {
-            let sum: f32 = st.shown().iter().map(|c| w[*c]).sum();
-            if sum < row_w {
-                let mut extra = row_w - sum;
-                for (col, min_w) in [
-                    (2usize, 150.0f32),
-                    (3, 190.0),
-                    (4, 125.0),
-                    (5, 118.0),
-                    (ADDED, 155.0),
-                ] {
-                    if st.visible[col] && w[col] < min_w && extra > 0.0 {
-                        let give = (min_w - w[col]).min(extra);
-                        w[col] += give;
-                        extra -= give;
-                    }
-                }
-                if extra > 0.0 {
-                    w[0] += extra;
-                }
-            }
-        }
-        w
+    let content_w = {
+        let (sc, ew) = layout_for_width(st, row_w, modern);
+        sc.iter().map(|c| ew[*c]).sum::<f32>()
     };
+    st.hscroll = st.hscroll.clamp(0.0, (content_w - row_w).max(0.0)).round();
 
     // Column spans in display order: (slot, x, right) with the separator on the last pixel.
     let spans = |st: &ListState| {
-        let eff = effective_widths(st);
+        let (shown_cols, eff) = layout_for_width(st, row_w, modern);
         let mut v = Vec::new();
         let mut x = cl - st.hscroll;
-        for c in st.shown() {
+        for c in shown_cols {
             v.push((c, x, x + eff[c] - 1.0));
             x += eff[c];
         }
@@ -634,7 +694,7 @@ pub fn show(
         st.drag = match near_sep(pp.x) {
             Some(col) => Some(HeaderDrag::Resize {
                 col,
-                width: effective_widths(st)[col],
+                width: layout_for_width(st, row_w, modern).1[col],
                 x0: pp.x,
             }),
             None => cols
@@ -717,6 +777,7 @@ pub fn show(
 
     // ---- header painting -------------------------------------------------------------------
     let cols = spans(st);
+    let content_w: f32 = cols.iter().map(|(_, x0, x1)| x1 - x0 + 1.0).sum();
     let p_all = p.clone();
     let p = p.with_clip_rect(screen(header));
     fill(&p, cl, ct, rr, ct + header_h() - 1.0, HEADER_BG());
@@ -1205,7 +1266,7 @@ pub fn show(
     // While a column is dragged: a translucent copy of its header follows the pointer, and a
     // 2 px mark shows where it will land.
     if let (Some(HeaderDrag::Move { col, grab }), Some(pp)) = (st.drag, pointer) {
-        let w = st.widths[col];
+        let w = layout_for_width(st, row_w, modern).1[col];
         let ghost = Rect::from_min_size(pos2(pp.x - grab, ct), egui::vec2(w, header_h()));
         let top = ui.ctx().layer_painter(egui::LayerId::new(
             egui::Order::Tooltip,
@@ -1598,14 +1659,17 @@ fn paint_modern_status(
     let pct_str = status_percent(&row.cells[3]).map(|_| row.cells[3].as_str());
     let dl_key = "Downloading";
     let paused_key = "Paused";
+    let wide = x1 - x0 >= 185.0;
     let full = match row.status_group {
         "Downloading" => match pct_str {
-            Some(pct) => format!("{}  {}", crate::i18n::t(dl_key), pct),
+            Some(pct) if wide => format!("{}  {}", crate::i18n::t(dl_key), pct),
+            Some(pct) => pct.to_owned(),
             None if row.cells[3].is_empty() => crate::i18n::t(dl_key).to_owned(),
             None => row.cells[3].clone(),
         },
         "Stopped" => match pct_str {
-            Some(pct) => format!("{}  {}", crate::i18n::t(paused_key), pct),
+            Some(pct) if wide => format!("{}  {}", crate::i18n::t(paused_key), pct),
+            Some(pct) => pct.to_owned(),
             None => crate::i18n::t(paused_key).to_owned(),
         },
         _ => row.cells[3].clone(),
@@ -1916,12 +1980,12 @@ fn move_column(st: &mut ListState, cols: &[(usize, f32, f32)], col: usize, x: f3
     let mut shown: Vec<usize> = cols.iter().map(|c| c.0).collect();
     let moved = shown.remove(from);
     shown.insert(target.min(shown.len()), moved);
-    // Hidden columns keep their place after the visible ones.
+    // Hidden or responsively collapsed columns keep their place after the shown ones.
     let hidden: Vec<usize> = st
         .order
         .iter()
         .copied()
-        .filter(|c| !st.visible[*c])
+        .filter(|c| !cols.iter().any(|s| s.0 == *c))
         .collect();
     st.order = shown.into_iter().chain(hidden).collect();
 }
@@ -1929,6 +1993,39 @@ fn move_column(st: &mut ListState, cols: &[(usize, f32, f32)], col: usize, x: f3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modern_responsive_layout_fits_compact_and_wide_windows() {
+        let mut st = ListState::default();
+        st.apply(Layout {
+            order: vec![SOURCE, 0, 2, 3, 5, 4, ADDED, 1, UPLOAD, PEERS, RATIO, 6, 7],
+            widths: vec![
+                340.0, 24.0, 95.0, 145.0, 100.0, 115.0, 90.0, 200.0, 155.0, 68.0, 64.0, 92.0, 100.0,
+            ],
+            visible: vec![
+                true, false, true, true, true, true, false, false, true, true, false, false, false,
+            ],
+            sort: None,
+        });
+
+        // Compact floating window (~716 px wide -> row_w = 708 px):
+        // collapses Source & Added, expands Size to >= 132 px, and fits row_w with zero overflow.
+        let (shown_compact, w_compact) = layout_for_width(&st, 708.0, true);
+        assert_eq!(shown_compact, vec![0, 2, 3, 5, 4]);
+        assert!(w_compact[2] >= 132.0);
+        assert!(w_compact[3] >= 104.0);
+        assert!(w_compact[5] >= 106.0);
+        assert!(w_compact[4] >= 106.0);
+        assert!(w_compact[0] >= 240.0);
+        let sum_compact: f32 = shown_compact.iter().map(|&c| w_compact[c]).sum();
+        assert!((sum_compact - 708.0).abs() <= 0.5);
+
+        // Maximized window (1360 px): restores Source & Added and fills exact width.
+        let (shown_wide, w_wide) = layout_for_width(&st, 1360.0, true);
+        assert_eq!(shown_wide, vec![SOURCE, 0, 2, 3, 5, 4, ADDED]);
+        let sum_wide: f32 = shown_wide.iter().map(|&c| w_wide[c]).sum();
+        assert!((sum_wide - 1360.0).abs() <= 0.5);
+    }
 
     #[test]
     fn data_cells_keep_their_own_direction() {
