@@ -6,7 +6,7 @@ use mdm_engine::Snapshot;
 use mdm_engine::download::ConnStatus;
 
 use crate::dialogs::display_path;
-use crate::model::{self, Item, Status, size3};
+use crate::model::{self, Item, Status, size_clean as size3};
 // Laid out in English pixels: `fill` and `px` make each one where it is on screen (bars fill
 // from the right in a right-to-left interface), `text` starts at an English pen.
 use crate::winui::{self, ButtonKind, fill_l as fill, px_l as px, r, text};
@@ -207,7 +207,7 @@ impl Progress {
     pub fn new(id: u64, show_complete: bool) -> Self {
         Progress {
             id,
-            details: true,
+            details: crate::theme::metrics().list_row <= 18.0,
             tab: Tab::Status,
             hidden_tabs: Vec::new(),
             ttab: TTab::Files,
@@ -678,7 +678,7 @@ impl Progress {
             winui::TEXT(),
         );
         let rate = if item.status == Status::Downloading {
-            model::rate(item.rate())
+            model::rate_clean(item.rate())
         } else {
             String::new()
         };
@@ -1052,7 +1052,7 @@ fn status_page(ui: &Ui, o: Pos2, item: &Item, snap: Option<&Snapshot>, frac: Opt
             112.0,
             135.0,
             if item.status == Status::Downloading {
-                model::rate(item.rate())
+                model::rate_clean(item.rate())
             } else {
                 String::new()
             },

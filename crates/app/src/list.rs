@@ -329,6 +329,12 @@ pub struct Row {
     pub icon: IconKey,
     /// In a queue: the Q column shows a queue icon (IDM: stacked files).
     pub queued: bool,
+    /// Known fraction 0.0..=1.0 for the wide FDM progress bar under File Name.
+    pub progress: Option<f32>,
+    /// Downloaded / total text in modern rows ("189,1 MB / 4,19 GB", or "63,07 MB" when complete).
+    pub size_detail: String,
+    /// Whether the inline row button can start or resume this download.
+    pub can_resume: bool,
     pub cells: [String; COLS],
 }
 
@@ -339,6 +345,8 @@ pub struct ListResponse {
     pub body: Option<Rect>,
     /// How the selection changes (a click, a key, a selection box).
     pub pick: Option<Pick>,
+    /// Inline quick-action button clicked on this row (Pause / Resume / Open folder).
+    pub row_action: Option<usize>,
     /// Double-click on this row.
     pub double_clicked: Option<usize>,
     /// Enter on the focused row (Open, as its menu says, whatever a double-click does).
@@ -531,7 +539,11 @@ pub fn show(
         fill(&p, l + 1.0, t + 1.0, r - 1.0, b - 1.0, BG());
     }
     let (cl, ct, cr, cb) = (l + 2.0, t + 2.0, r - 2.0, b - 2.0);
-    let font = winui::tahoma();
+    let font = if modern {
+        winui::segoe()
+    } else {
+        winui::tahoma()
+    };
 
     // Scroll bars (notes/ui-spec/scrollbars.md), decided like Win32: each one shows when the
     // content overflows the room the other one leaves.
@@ -552,13 +564,41 @@ pub fn show(
     let row_w = rr - cl + 1.0;
     st.hscroll = st.hscroll.clamp(0.0, (content_w - row_w).max(0.0)).round();
 
+    let effective_widths = |st: &ListState| -> [f32; COLS] {
+        let mut w = st.widths;
+        if modern {
+            let sum: f32 = st.shown().iter().map(|c| w[*c]).sum();
+            if sum < row_w {
+                let mut extra = row_w - sum;
+                for (col, min_w) in [
+                    (2usize, 150.0f32),
+                    (3, 190.0),
+                    (4, 125.0),
+                    (5, 118.0),
+                    (ADDED, 155.0),
+                ] {
+                    if st.visible[col] && w[col] < min_w && extra > 0.0 {
+                        let give = (min_w - w[col]).min(extra);
+                        w[col] += give;
+                        extra -= give;
+                    }
+                }
+                if extra > 0.0 {
+                    w[0] += extra;
+                }
+            }
+        }
+        w
+    };
+
     // Column spans in display order: (slot, x, right) with the separator on the last pixel.
     let spans = |st: &ListState| {
+        let eff = effective_widths(st);
         let mut v = Vec::new();
         let mut x = cl - st.hscroll;
         for c in st.shown() {
-            v.push((c, x, x + st.widths[c] - 1.0));
-            x += st.widths[c];
+            v.push((c, x, x + eff[c] - 1.0));
+            x += eff[c];
         }
         v
     };
@@ -594,7 +634,7 @@ pub fn show(
         st.drag = match near_sep(pp.x) {
             Some(col) => Some(HeaderDrag::Resize {
                 col,
-                width: st.widths[col],
+                width: effective_widths(st)[col],
                 x0: pp.x,
             }),
             None => cols
@@ -729,7 +769,12 @@ pub fn show(
         let filtered = st.filters[*c].is_some();
         let open = st.filter_open.is_some_and(|(fc, _)| fc == *c);
         let roomy = x1 - x0 >= 44.0;
-        if roomy || filtered || hovered || open {
+        let show_funnel = if modern {
+            filtered || hovered || open
+        } else {
+            roomy || filtered || hovered || open
+        };
+        if show_funnel {
             let fr = funnel_rect(st, *c, *x0, *x1, ct);
             let color = if filtered {
                 FILTER_ON()
@@ -914,29 +959,29 @@ pub fn show(
             let has_focus = focus == Some(idx) && st.focused && keys_in_use;
             if modern {
                 let pill_rc = Rect::from_min_max(
-                    pos2(cl + 2.0, top + 1.0),
-                    pos2(last_right - 2.0, top + row_h() - 2.0),
+                    pos2(cl + 4.0, top + 2.0),
+                    pos2(last_right - 4.0, top + row_h() - 3.0),
                 );
                 if sel {
-                    bp.rect_filled(screen(pill_rc), 5.0, SELECTED());
+                    bp.rect_filled(screen(pill_rc), 6.0, SELECTED());
                     let bar = Rect::from_min_size(
-                        pos2(cl + 3.0, top + ((row_h() - 16.0) / 2.0).floor()),
-                        egui::vec2(3.0, 16.0),
+                        pos2(cl + 5.0, top + ((row_h() - 20.0) / 2.0).floor()),
+                        egui::vec2(3.0, 20.0),
                     );
                     bp.rect_filled(screen(bar), 1.5, winui::accent());
                 } else if picked {
-                    bp.rect_filled(screen(pill_rc), 5.0, winui::SELECTED_INACTIVE());
+                    bp.rect_filled(screen(pill_rc), 6.0, winui::SELECTED_INACTIVE());
                 } else if hover_idx == Some(idx) {
                     bp.rect_filled(
                         screen(pill_rc),
-                        5.0,
+                        6.0,
                         crate::theme::colors().toolbar_hot_faint,
                     );
                 }
                 if has_focus {
                     bp.rect_stroke(
                         screen(pill_rc),
-                        5.0,
+                        6.0,
                         egui::Stroke::new(1.0, crate::theme::colors().focus_ring),
                         egui::StrokeKind::Inside,
                     );
@@ -966,12 +1011,93 @@ pub fn show(
                 );
             }
             let icon_y = top + ((row_h() - 16.0) / 2.0).floor().max(0.0);
-            let text_y = top + ((row_h() + 7.0) / 2.0).floor();
+            let text_y = if modern {
+                top + ((row_h() + 9.0) / 2.0).floor()
+            } else {
+                top + ((row_h() + 7.0) / 2.0).floor()
+            };
+            let hover_pt = resp.hover_pos().map(english);
             for (c, x0, x1) in &cols {
-                let tx = if *c == 0 {
-                    let ix = if modern { x0 + 8.0 } else { x0 + 4.0 };
+                let cell = Rect::from_min_max(pos2(*x0, top), pos2(*x1 - 1.0, top + row_h()));
+                let clip = bp.with_clip_rect(screen(cell.intersect(body)));
+                if modern && *c == 0 {
+                    let mut ix = x0 + 10.0;
+                    if let Some(btn_rc) = action_rect(&cols, top, modern) {
+                        let btn_hot = hover_idx == Some(idx)
+                            && hover_pt.is_some_and(|hp| btn_rc.contains(hp));
+                        paint_row_action(&clip, btn_rc, row, btn_hot, sel);
+                        if btn_hot {
+                            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                            cut_under_pointer = Some(action_tooltip(row));
+                        }
+                        ix = x0 + 42.0;
+                    }
                     icons.paint_in(ui, &bp, row.icon.clone(), pos2(ix, icon_y));
-                    if modern { x0 + 28.0 } else { x0 + 22.0 }
+                    let tx = ix + 22.0;
+                    let value = cell_text(0, &row.cells[0]);
+                    let room = (x1 - tx - 10.0).max(0.0);
+                    let s = winui::ellipsize(&bp, &font, &value, room);
+                    if hover_pt.is_some_and(|h| cell.contains(h))
+                        && action_rect(&cols, top, modern)
+                            .is_none_or(|b| hover_pt.is_none_or(|hp| !b.contains(hp)))
+                        && s != value
+                    {
+                        cut_under_pointer = Some(row.cells[0].clone());
+                    }
+                    let has_bar = matches!(row.status_group, "Downloading" | "Stopped" | "Error")
+                        && (row.progress.is_some() || row.status_group == "Downloading");
+                    let name_y = if has_bar { top + 20.0 } else { text_y };
+                    let name_ink = if sel {
+                        winui::SELECTION_TEXT()
+                    } else {
+                        TEXT()
+                    };
+                    text_font(&clip, font.clone(), tx, name_y, &s, name_ink);
+                    if has_bar && room > 24.0 {
+                        let track = Rect::from_min_size(pos2(tx, top + 29.0), egui::vec2(room, 6.0));
+                        clip.rect_filled(
+                            screen(track),
+                            3.0,
+                            crate::theme::colors().meter_track,
+                        );
+                        let bar_color = match row.status_group {
+                            "Downloading" => crate::theme::colors().progress_bar,
+                            "Stopped" => {
+                                if crate::theme::dark_surface() {
+                                    Color32::from_rgb(251, 191, 36)
+                                } else {
+                                    Color32::from_rgb(245, 158, 11)
+                                }
+                            }
+                            "Error" => winui::ERROR(),
+                            _ => SORT_ARROW(),
+                        };
+                        let pct = row.progress.unwrap_or(0.18).clamp(0.0, 1.0);
+                        let fw = (room * pct).round().max(if pct > 0.0 { 4.0 } else { 0.0 });
+                        if fw > 0.0 {
+                            let fill_rc =
+                                Rect::from_min_size(pos2(tx, top + 29.0), egui::vec2(fw, 6.0));
+                            clip.rect_filled(screen(fill_rc), 3.0, bar_color);
+                        }
+                    }
+                    continue;
+                }
+                if modern && *c == 3 {
+                    let (full_status, cut) =
+                        paint_modern_status(&clip, &font, (*x0, *x1), top, row);
+                    if hover_pt.is_some_and(|h| cell.contains(h)) {
+                        let tip = status_tip(idx);
+                        if !tip.is_empty() {
+                            cut_under_pointer = Some(tip);
+                        } else if cut {
+                            cut_under_pointer = Some(full_status);
+                        }
+                    }
+                    continue;
+                }
+                let tx = if *c == 0 {
+                    icons.paint_in(ui, &bp, row.icon.clone(), pos2(x0 + 4.0, icon_y));
+                    x0 + 22.0
                 } else {
                     x0 + 6.0
                 };
@@ -983,31 +1109,27 @@ pub fn show(
                         pos2(x0 + 2.0, icon_y),
                     );
                 }
-                let cell = Rect::from_min_max(pos2(*x0, top), pos2(*x1 - 1.0, top + row_h()));
                 if *c == SOURCE {
                     let cut = chip(
-                        &bp.with_clip_rect(screen(cell.intersect(body))),
+                        &clip,
                         &font,
                         (*x0, *x1),
                         top,
                         &row.cells[*c],
                     );
-                    let hovered = resp
-                        .hover_pos()
-                        .map(english)
-                        .is_some_and(|h| cell.contains(h));
-                    if cut && hovered {
+                    if cut && hover_pt.is_some_and(|h| cell.contains(h)) {
                         cut_under_pointer = Some(crate::i18n::t(&row.cells[*c]).to_owned());
                     }
                     continue;
                 }
-                let value = cell_text(*c, &row.cells[*c]);
+                let raw_cell = if modern && *c == 2 && !row.size_detail.is_empty() {
+                    &row.size_detail
+                } else {
+                    &row.cells[*c]
+                };
+                let value = cell_text(*c, raw_cell);
                 let s = winui::ellipsize(&bp, &font, &value, x1 - tx - 3.0);
-                if resp
-                    .hover_pos()
-                    .map(english)
-                    .is_some_and(|h| cell.contains(h))
-                {
+                if hover_pt.is_some_and(|h| cell.contains(h)) {
                     let tip = if *c == 3 {
                         status_tip(idx)
                     } else {
@@ -1016,77 +1138,57 @@ pub fn show(
                     if !tip.is_empty() {
                         cut_under_pointer = Some(tip);
                     } else if s != value {
-                        cut_under_pointer = Some(row.cells[*c].clone());
+                        cut_under_pointer = Some(raw_cell.clone());
                     }
                 }
-                let clip = bp.with_clip_rect(screen(cell.intersect(body)));
                 let pct_opt = if *c == 3 {
                     status_percent(&row.cells[*c])
                 } else {
                     None
                 };
-                let mut cell_ty = text_y;
                 if let Some(pct) = pct_opt
                     && x1 - x0 > 16.0
                 {
-                    if modern {
-                        cell_ty = top + 14.0;
-                        let bar_w = (x1 - tx - 8.0).max(0.0);
-                        let track =
-                            Rect::from_min_size(pos2(tx, top + 19.0), egui::vec2(bar_w, 5.0));
-                        clip.rect_filled(
-                            screen(track),
-                            2.5,
-                            crate::theme::colors().meter_track,
-                        );
-                        let fw = (bar_w * pct).round();
-                        if fw > 0.0 {
-                            let fill_rc =
-                                Rect::from_min_size(pos2(tx, top + 19.0), egui::vec2(fw, 5.0));
-                            clip.rect_filled(
-                                screen(fill_rc),
-                                2.5,
-                                crate::theme::colors().progress_bar,
-                            );
-                        }
-                    } else {
-                        let bar_w = (x1 - x0 - 8.0).max(0.0);
-                        let track = Rect::from_min_size(
-                            pos2(x0 + 4.0, top + row_h() - 4.0),
-                            egui::vec2(bar_w, 2.0),
-                        );
-                        clip.rect_filled(
-                            screen(track),
-                            1.0,
-                            crate::theme::colors().meter_track,
-                        );
-                        let fill_rect = Rect::from_min_size(
-                            pos2(x0 + 4.0, top + row_h() - 4.0),
-                            egui::vec2((bar_w * pct).round(), 2.0),
-                        );
-                        clip.rect_filled(
-                            screen(fill_rect),
-                            1.0,
-                            crate::theme::colors().progress_bar,
-                        );
-                    }
+                    let bar_w = (x1 - x0 - 8.0).max(0.0);
+                    let track = Rect::from_min_size(
+                        pos2(x0 + 4.0, top + row_h() - 4.0),
+                        egui::vec2(bar_w, 2.0),
+                    );
+                    clip.rect_filled(
+                        screen(track),
+                        1.0,
+                        crate::theme::colors().meter_track,
+                    );
+                    let fill_rect = Rect::from_min_size(
+                        pos2(x0 + 4.0, top + row_h() - 4.0),
+                        egui::vec2((bar_w * pct).round(), 2.0),
+                    );
+                    clip.rect_filled(
+                        screen(fill_rect),
+                        1.0,
+                        crate::theme::colors().progress_bar,
+                    );
                 }
                 let failed = row.status_group == "Error" && (*c == 3 || *c == 7);
-                let done = modern && row.status_group == "Complete" && *c == 3;
+                let live_rate = modern && *c == 5 && row.status_group == "Downloading";
                 let ink = if sel {
                     winui::SELECTION_TEXT()
                 } else if failed {
                     winui::ERROR()
-                } else if done {
-                    crate::theme::colors().meter_fill
+                } else if live_rate {
+                    crate::theme::colors().progress_bar
                 } else {
                     TEXT()
                 };
-                text_font(&clip, font.clone(), tx, cell_ty, &s, ink);
+                text_font(&clip, font.clone(), tx, text_y, &s, ink);
+            }
+            if modern {
+                let gy = top + row_h() - 1.0;
+                fill(&bp, cl + 10.0, gy, last_right - 10.0, gy, GRID_H());
             }
         }
-        let gy = top + row_h() - 1.0;
-        if !rows.is_empty() {
+        if !modern && !rows.is_empty() {
+            let gy = top + row_h() - 1.0;
             fill(&bp, cl, gy, rr, gy, GRID_H());
         }
     }
@@ -1190,18 +1292,28 @@ pub fn show(
         && let pos = english(on_screen)
         && body.contains(pos)
     {
+        let on_action_btn = row_at(pos).and_then(|i| {
+            let row_top = body_top + (i as f32 - first as f32) * row_h() - offset;
+            let hit = action_rect(&cols, row_top, modern).is_some_and(|rc| rc.contains(pos));
+            hit.then_some(i)
+        });
         if resp.clicked() {
-            // Windows: Ctrl+click puts a row in or out, Shift+click selects from the anchor,
-            // Ctrl+Shift+click adds that range; a click on blank space clears (not with Ctrl).
-            out.pick = match (row_at(pos), mods.command, mods.shift) {
-                (Some(i), false, false) => Some(Pick::Only(i)),
-                (Some(i), true, false) => Some(Pick::Toggle(i)),
-                (Some(to), ctrl, true) => Some(Pick::Range { to, add: ctrl }),
-                (None, false, _) => Some(Pick::Clear),
-                (None, true, _) => None,
-            };
+            if let Some(i) = on_action_btn {
+                out.row_action = Some(i);
+                out.pick = Some(Pick::Only(i));
+            } else {
+                // Windows: Ctrl+click puts a row in or out, Shift+click selects from the anchor,
+                // Ctrl+Shift+click adds that range; a click on blank space clears (not with Ctrl).
+                out.pick = match (row_at(pos), mods.command, mods.shift) {
+                    (Some(i), false, false) => Some(Pick::Only(i)),
+                    (Some(i), true, false) => Some(Pick::Toggle(i)),
+                    (Some(to), ctrl, true) => Some(Pick::Range { to, add: ctrl }),
+                    (None, false, _) => Some(Pick::Clear),
+                    (None, true, _) => None,
+                };
+            }
         }
-        if resp.double_clicked() {
+        if resp.double_clicked() && on_action_btn.is_none() {
             out.double_clicked = row_at(pos);
         }
         if resp.secondary_clicked() {
@@ -1360,19 +1472,219 @@ fn chip(
     // Room: the pill starts 5 px in, pads its text 6 px each side, and ends 3 px before the cell.
     let label = &winui::ellipsize(p, font, full, (x1 - x0 - 5.0 - 12.0 - 3.0).max(0.0));
     let w = winui::text_width_font(p, font.clone(), label).round();
-    let pill_h = (row_h() - 4.0).min(15.0);
+    let modern = row_h() > 18.0;
+    let pill_h = if modern {
+        20.0
+    } else {
+        (row_h() - 4.0).min(15.0)
+    };
     let pill_top = top + ((row_h() - pill_h) / 2.0).floor();
     let pill = Rect::from_min_size(pos2(x0 + 5.0, pill_top), egui::vec2(w + 12.0, pill_h));
-    p.rect_filled(winui::rect(pill), pill_h / 2.0, fill);
+    let bg = if modern {
+        fill.gamma_multiply(0.15)
+    } else {
+        fill
+    };
+    let ink = if modern {
+        fill
+    } else {
+        crate::theme::colors().chip_text
+    };
+    p.rect_filled(winui::rect(pill), pill_h / 2.0, bg);
     text_font(
         p,
         font.clone(),
         pill.left() + 6.0,
-        top + ((row_h() + 7.0) / 2.0).floor(),
+        top + ((row_h() + if modern { 8.0 } else { 7.0 }) / 2.0).floor(),
         label,
-        crate::theme::colors().chip_text,
+        ink,
     );
     label != full
+}
+
+/// English bounds of the inline quick-action button at the start of File Name in modern mode.
+fn action_rect(cols: &[(usize, f32, f32)], top: f32, modern: bool) -> Option<Rect> {
+    if !modern {
+        return None;
+    }
+    let (_, x0, x1) = cols.iter().find(|(c, _, _)| *c == 0)?;
+    if *x1 - *x0 < 92.0 {
+        return None;
+    }
+    let cy = top + (row_h() / 2.0).floor();
+    Some(Rect::from_center_size(pos2(*x0 + 21.0, cy), egui::vec2(26.0, 26.0)))
+}
+
+fn action_tooltip(row: &Row) -> String {
+    if row.status_group == "Downloading" {
+        crate::i18n::t("Pause").to_owned()
+    } else if row.can_resume {
+        crate::i18n::t("Resume").to_owned()
+    } else {
+        crate::i18n::t("Open folder").to_owned()
+    }
+}
+
+/// Paints the circular FDM-style inline Pause / Resume / Open Folder button inside `rc` (English).
+fn paint_row_action(p: &egui::Painter, rc: Rect, row: &Row, hot: bool, sel: bool) {
+    let sc = winui::rect(rc);
+    let (cx, cy) = (sc.center().x, sc.center().y);
+    let dark = crate::theme::dark_surface();
+    if row.status_group == "Downloading" {
+        let fg = if sel && !dark {
+            winui::accent()
+        } else {
+            crate::theme::colors().progress_bar
+        };
+        let bg = fg.gamma_multiply(if hot { 0.24 } else { 0.12 });
+        p.rect_filled(sc, 13.0, bg);
+        let b1 = Rect::from_center_size(pos2(cx - 3.0, cy), egui::vec2(2.6, 10.0));
+        let b2 = Rect::from_center_size(pos2(cx + 3.0, cy), egui::vec2(2.6, 10.0));
+        p.rect_filled(b1, 1.0, fg);
+        p.rect_filled(b2, 1.0, fg);
+    } else if row.can_resume {
+        let fg = match row.status_group {
+            "Stopped" => {
+                if dark {
+                    Color32::from_rgb(251, 191, 36)
+                } else {
+                    Color32::from_rgb(217, 119, 6)
+                }
+            }
+            "Error" => winui::ERROR(),
+            _ => crate::theme::colors().progress_bar,
+        };
+        let bg = fg.gamma_multiply(if hot { 0.24 } else { 0.12 });
+        p.rect_filled(sc, 13.0, bg);
+        p.add(egui::Shape::convex_polygon(
+            vec![
+                pos2(cx - 3.0, cy - 5.0),
+                pos2(cx + 5.5, cy),
+                pos2(cx - 3.0, cy + 5.0),
+            ],
+            fg,
+            egui::Stroke::NONE,
+        ));
+    } else {
+        let fg = if hot {
+            crate::theme::colors().progress_bar
+        } else if dark {
+            Color32::from_rgb(148, 163, 184)
+        } else {
+            Color32::from_rgb(71, 85, 105)
+        };
+        let bg = if hot {
+            crate::theme::colors().progress_bar.gamma_multiply(0.16)
+        } else {
+            crate::theme::colors().toolbar_hot
+        };
+        p.rect_filled(sc, 13.0, bg);
+        let tab = Rect::from_min_size(pos2(cx - 6.0, cy - 4.5), egui::vec2(5.0, 2.5));
+        let body = Rect::from_min_size(pos2(cx - 6.0, cy - 2.5), egui::vec2(12.0, 7.5));
+        p.rect_filled(tab, 1.0, fg);
+        p.rect_filled(body, 1.5, fg);
+    }
+}
+
+/// Paints a color-coded status badge in modern mode ("Downloading 11.64%" vs "Paused 11.64%" vs "Complete").
+fn paint_modern_status(
+    p: &egui::Painter,
+    font: &egui::FontId,
+    (x0, x1): (f32, f32),
+    top: f32,
+    row: &Row,
+) -> (String, bool) {
+    let pct_str = status_percent(&row.cells[3]).map(|_| row.cells[3].as_str());
+    let full = match row.status_group {
+        "Downloading" => match pct_str {
+            Some(pct) => format!("{}  {}", crate::i18n::t("Downloading"), pct),
+            None if row.cells[3].is_empty() => crate::i18n::t("Downloading").to_owned(),
+            None => row.cells[3].clone(),
+        },
+        "Stopped" => match pct_str {
+            Some(pct) => format!("{}  {}", crate::i18n::t("Paused"), pct),
+            None => crate::i18n::t("Paused").to_owned(),
+        },
+        _ => row.cells[3].clone(),
+    };
+    if full.is_empty() {
+        return (full, false);
+    }
+    let dark = crate::theme::dark_surface();
+    let (fg, bg) = match row.status_group {
+        "Downloading" => {
+            let fg = if dark {
+                Color32::from_rgb(96, 165, 250)
+            } else {
+                Color32::from_rgb(29, 78, 216)
+            };
+            (fg, crate::theme::colors().progress_bar.gamma_multiply(0.13))
+        }
+        "Stopped" => {
+            let fg = if dark {
+                Color32::from_rgb(251, 191, 36)
+            } else {
+                Color32::from_rgb(180, 83, 9)
+            };
+            (fg, fg.gamma_multiply(0.15))
+        }
+        "Complete" => {
+            let fg = if dark {
+                Color32::from_rgb(74, 222, 128)
+            } else {
+                Color32::from_rgb(21, 128, 61)
+            };
+            (fg, crate::theme::colors().meter_fill.gamma_multiply(0.14))
+        }
+        "Error" => {
+            let fg = winui::ERROR();
+            (fg, fg.gamma_multiply(0.14))
+        }
+        _ => {
+            let fg = SORT_ARROW();
+            (fg, fg.gamma_multiply(0.14))
+        }
+    };
+    let max_text = (x1 - x0 - 34.0).max(0.0);
+    let shown = winui::ellipsize(p, font, &full, max_text);
+    let tw = winui::text_width_font(p, font.clone(), &shown).round();
+    let pill_h = 22.0;
+    let pill_top = top + ((row_h() - pill_h) / 2.0).floor();
+    let pill = Rect::from_min_size(pos2(x0 + 6.0, pill_top), egui::vec2(tw + 26.0, pill_h));
+    let pill_s = winui::rect(pill);
+    p.rect_filled(pill_s, 11.0, bg);
+
+    let mark_box = winui::rect(Rect::from_center_size(
+        pos2(x0 + 15.0, pill_top + 11.0),
+        egui::vec2(8.0, 8.0),
+    ));
+    let mc = mark_box.center();
+    match row.status_group {
+        "Complete" => {
+            let st = egui::Stroke::new(1.6, fg);
+            p.line_segment([pos2(mc.x - 3.5, mc.y + 0.2), pos2(mc.x - 1.0, mc.y + 2.8)], st);
+            p.line_segment([pos2(mc.x - 1.0, mc.y + 2.8), pos2(mc.x + 3.8, mc.y - 2.6)], st);
+        }
+        "Stopped" => {
+            let b1 = Rect::from_center_size(pos2(mc.x - 1.8, mc.y), egui::vec2(1.8, 7.0));
+            let b2 = Rect::from_center_size(pos2(mc.x + 1.8, mc.y), egui::vec2(1.8, 7.0));
+            p.rect_filled(b1, 0.8, fg);
+            p.rect_filled(b2, 0.8, fg);
+        }
+        _ => {
+            p.circle_filled(mc, 3.0, fg);
+        }
+    }
+
+    text_font(
+        p,
+        font.clone(),
+        x0 + 24.0,
+        top + ((row_h() + 8.0) / 2.0).floor(),
+        &shown,
+        fg,
+    );
+    (full, shown != full)
 }
 
 fn status_percent(s: &str) -> Option<f32> {
@@ -1670,6 +1982,9 @@ mod tests {
             status_group: status,
             icon: IconKey::Silk("page_white"),
             queued,
+            progress: None,
+            size_detail: String::new(),
+            can_resume: false,
             cells,
         }
     }

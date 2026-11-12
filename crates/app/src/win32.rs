@@ -4783,6 +4783,87 @@ pub fn folder_opener() -> Option<String> {
     })
 }
 
+/// Open path with its Windows shell handler (ShellExecuteW), without spawning PowerShell.
+/// When UserChoice points to a stripped handler (SE_ERR_NOASSOC / SE_ERR_ASSOCINCOMPLETE,
+/// e.g. CompressedFolder on Lite Windows builds while WinRAR or 7-Zip is registered under
+/// Software\Classes\.ext), falls back to that ProgId's executable, and finally to Windows'
+/// native Open With dialog.
+pub fn open_file_native(path: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use windows_sys::Win32::UI::Shell::{ASSOCF_NONE, ASSOCSTR_EXECUTABLE, AssocQueryStringW};
+
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn ShellExecuteW(
+            hwnd: *mut c_void,
+            operation: *const u16,
+            file: *const u16,
+            parameters: *const u16,
+            directory: *const u16,
+            show_cmd: i32,
+        ) -> isize;
+    }
+
+    let wide_os = |s: &std::ffi::OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+    let file_w = wide_os(path.as_os_str());
+    let dir_w = path.parent().map(|d| wide_os(d.as_os_str()));
+    // SAFETY: NUL-terminated UTF-16 buffers outlive the call; 1 is SW_SHOWNORMAL.
+    let rc = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            file_w.as_ptr(),
+            std::ptr::null(),
+            dir_w.as_ref().map_or(std::ptr::null(), |d| d.as_ptr()),
+            1,
+        )
+    };
+    if rc > 32 {
+        return Ok(());
+    }
+    if rc == 27 || rc == 31 {
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()).filter(|e| !e.is_empty()) {
+            let key = format!("Software\\Classes\\.{ext}");
+            let prog_id = reg_string_in(HKEY_CURRENT_USER, &key, "")
+                .filter(|s| !s.is_empty())
+                .or_else(|| reg_string_in(HKEY_LOCAL_MACHINE, &key, "").filter(|s| !s.is_empty()));
+            if let Some(prog_id) = prog_id {
+                let cls_w: Vec<u16> = prog_id.encode_utf16().chain(Some(0)).collect();
+                let open_w: Vec<u16> = "open\0".encode_utf16().collect();
+                let mut out = vec![0u16; 1024];
+                let mut len = out.len() as u32;
+                // SAFETY: NUL-terminated strings; len bounds out.
+                let hr = unsafe {
+                    AssocQueryStringW(
+                        ASSOCF_NONE,
+                        ASSOCSTR_EXECUTABLE,
+                        cls_w.as_ptr(),
+                        open_w.as_ptr(),
+                        out.as_mut_ptr(),
+                        &mut len,
+                    )
+                };
+                if hr == 0 {
+                    let end = out.iter().position(|&c| c == 0).unwrap_or(out.len());
+                    let exe = String::from_utf16_lossy(&out[..end]);
+                    if std::path::Path::new(&exe).is_file()
+                        && std::process::Command::new(&exe).arg(path).spawn().is_ok()
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        let _ = std::process::Command::new("rundll32")
+            .arg("shell32.dll,OpenAs_RunDLL")
+            .arg(path)
+            .spawn();
+        return Ok(());
+    }
+    Err(std::io::Error::last_os_error().to_string())
+}
+
 /// Who opens a folder, asked of `executable_for(class, verb)` as the shell reads it: a folder is
 /// a `Directory` first (where a replacement registers its verb, as the default or as `open`),
 /// then a `Folder` (where Windows registers Explorer). An installed program's other verbs there

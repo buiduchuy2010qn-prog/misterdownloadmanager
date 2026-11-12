@@ -1338,8 +1338,17 @@ impl App {
             "strip-left",
         );
         if let Some(right) = self.activity() {
-            winui::text_right(p, o.x + w - 10.0, baseline, &right, winui::MUTED());
+            let color = if self.fdm_mode() {
+                winui::accent()
+            } else {
+                winui::MUTED()
+            };
+            winui::text_right(p, o.x + w - 10.0, baseline, &right, color);
         }
+    }
+
+    fn fdm_mode(&self) -> bool {
+        self.settings.theme == "fdm-modern" || crate::theme::metrics().list_row > 18.0
     }
 
     /// "2 downloading, 1.25 MB/sec" while downloads run (the status strip, the tray's tip).
@@ -1357,7 +1366,7 @@ impl App {
                     "count",
                     &crate::i18n::tn(running.len() as u64, "{n} downloading", "{n} downloading"),
                 ),
-                ("speed", &model::rate(speed)),
+                ("speed", &model::rate_clean(speed)),
             ],
         ))
     }
@@ -1388,6 +1397,32 @@ impl App {
     /// One download's row in the list.
     /// `queued`: the downloads in a queue (worked out once for all the rows).
     fn row(&self, it: &Item, queued: &std::collections::HashSet<u64>) -> list::Row {
+        let size_detail = if it.status == Status::Complete {
+            it.size.map_or_else(
+                || {
+                    if it.downloaded > 0 {
+                        model::size_clean(it.downloaded)
+                    } else {
+                        String::new()
+                    }
+                },
+                model::size_clean,
+            )
+        } else if let Some(total) = it.size.filter(|t| *t > 0) {
+            if it.downloaded > 0 || matches!(it.status, Status::Downloading | Status::Stopped) {
+                format!(
+                    "{} / {}",
+                    model::size_clean(it.downloaded),
+                    model::size_clean(total)
+                )
+            } else {
+                model::size_clean(total)
+            }
+        } else if it.downloaded > 0 {
+            model::size_clean(it.downloaded)
+        } else {
+            String::new()
+        };
         list::Row {
             status_group: match it.status {
                 // i18n: a download's status (state it is in, not a command): being downloaded now
@@ -1403,6 +1438,9 @@ impl App {
             },
             icon: file_icon(&it.file_name),
             queued: queued.contains(&it.id),
+            progress: it.fraction().map(|f| f as f32),
+            size_detail,
+            can_resume: it.can_start(),
             cells: [
                 it.file_name.clone(),
                 String::new(),
@@ -1414,8 +1452,8 @@ impl App {
                     it.status_text()
                 },
                 it.time_left(),
-                if it.live.is_some() {
-                    model::rate(it.rate())
+                if it.live.is_some() && it.rate() > 0.0 {
+                    model::rate_clean(it.rate())
                 } else {
                     String::new()
                 },
@@ -1443,7 +1481,7 @@ impl App {
                 }),
                 it.torrent
                     .as_ref()
-                    .map_or(String::new(), |t| model::rate(t.up_speed)),
+                    .map_or(String::new(), |t| model::rate_clean(t.up_speed)),
             ],
         }
     }
@@ -2442,12 +2480,19 @@ impl App {
             } else {
                 crate::i18n::mark("from the command line")
             };
+            let silent = cmd.silent;
             let size = cmd.size;
             let id = self.push_item(url, dest, category, String::new(), size, None, cmd, source);
             self.name_guessed(id, guessed);
+            if !silent {
+                self.selection.set(id);
+            }
             if later {
                 self.queues[queue].items.push(id);
             } else {
+                if !silent && self.fdm_mode() && !crate::offscreen() {
+                    self.show_window(ctx);
+                }
                 self.start(id, true);
             }
         } else {
@@ -2662,7 +2707,7 @@ impl App {
         item.error = None;
         item.last_try = Some(model::now_stamp());
         self.dirty = true;
-        if show && !self.progress.iter().any(|p| p.id == id) {
+        if show && !self.fdm_mode() && !self.progress.iter().any(|p| p.id == id) {
             self.progress
                 .push(Progress::new(id, self.settings.show_complete));
         }
@@ -3562,7 +3607,7 @@ impl App {
             }
         }
         self.dirty = true;
-        if show && !self.progress.iter().any(|p| p.id == id) {
+        if show && !self.fdm_mode() && !self.progress.iter().any(|p| p.id == id) {
             self.progress
                 .push(Progress::new(id, self.settings.show_complete));
         }
@@ -3650,7 +3695,7 @@ impl App {
             }
         }
         self.dirty = true;
-        if show && !self.progress.iter().any(|p| p.id == id) {
+        if show && !self.fdm_mode() && !self.progress.iter().any(|p| p.id == id) {
             self.progress
                 .push(Progress::new(id, self.settings.show_complete));
         }
@@ -3850,7 +3895,7 @@ impl App {
         item.error = None;
         item.last_try = Some(model::now_stamp());
         self.dirty = true;
-        if show && !self.progress.iter().any(|p| p.id == id) {
+        if show && !self.fdm_mode() && !self.progress.iter().any(|p| p.id == id) {
             self.progress
                 .push(Progress::new(id, self.settings.show_complete));
         }
@@ -3977,7 +4022,7 @@ impl App {
         item.error = None;
         item.last_try = Some(model::now_stamp());
         self.dirty = true;
-        if show && !self.progress.iter().any(|p| p.id == id) {
+        if show && !self.fdm_mode() && !self.progress.iter().any(|p| p.id == id) {
             self.progress
                 .push(Progress::new(id, self.settings.show_complete));
         }
@@ -6900,6 +6945,24 @@ impl App {
         }
         if let Some(pick) = r.pick {
             self.selection.apply(pick, &ids);
+        }
+        if let Some(i) = r.row_action {
+            if let Some(&id) = ids.get(i) {
+                let state = self
+                    .items
+                    .iter()
+                    .find(|it| it.id == id)
+                    .map(|it| (it.live.is_some(), it.can_start(), it.status, it.dest.clone()));
+                if let Some((live, can_start, status, dest)) = state {
+                    if live {
+                        self.stop_by_hand(id);
+                    } else if can_start {
+                        self.start(id, false);
+                    } else if status == Status::Complete {
+                        dialogs::show_in_folder(&dest);
+                    }
+                }
+            }
         }
         if let Some(i) = r.properties {
             self.properties(ids[i]);

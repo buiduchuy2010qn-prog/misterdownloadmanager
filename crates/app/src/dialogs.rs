@@ -2438,19 +2438,26 @@ pub fn told() -> Vec<(&'static str, String)> {
 /// crate::launch's: whether it failed decides whether Download complete stays open.
 pub fn open_file(path: &Path) -> bool {
     let name = crate::i18n::isolate(&path.file_name().unwrap_or_default().to_string_lossy());
-    let failed = if !path.exists() {
-        crate::i18n::fmt(
+    let opened = if !path.exists() {
+        Err(crate::i18n::fmt(
             crate::i18n::t(
                 "{file} is no longer where it was saved (moved or deleted). Redownload, in its right-click menu, gets it again.",
             ),
             &[("file", &name)],
-        )
-    } else if let Err(e) = open::that_detached(path) {
-        crate::i18n::fmt(
-            crate::i18n::t("{file} could not be opened: {error}"),
-            &[("file", &name), ("error", &e.to_string())],
-        )
+        ))
     } else {
+        #[cfg(windows)]
+        let res = crate::win32::open_file_native(path);
+        #[cfg(not(windows))]
+        let res = open::that_detached(path).map_err(|e| e.to_string());
+        res.map_err(|err| {
+            crate::i18n::fmt(
+                crate::i18n::t("{file} could not be opened: {error}"),
+                &[("file", &name), ("error", &err)],
+            )
+        })
+    };
+    let Err(failed) = opened else {
         return true;
     };
     // i18n: title of the message when a downloaded file can't be opened

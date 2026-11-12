@@ -1060,6 +1060,7 @@ pub fn size(b: u64) -> String {
 }
 
 /// `200.000 MB` — the progress dialog uses three decimals (and KB below a kilobyte).
+#[allow(dead_code)]
 pub fn size3(b: u64) -> String {
     let v = b as f64;
     let k = 1024.0;
@@ -1094,6 +1095,48 @@ pub fn rate(bps: f64) -> String {
         format!("{:.3} MB/sec", bps / (1024.0 * 1024.0)) // not translated: English path
     } else {
         format!("{:.3} KB/sec", bps / 1024.0) // not translated: English path
+    }
+}
+
+/// Clean human-readable file size (`4.19 GB`, `189.1 MB`, `512 KB`), avoiding 3-decimal clutter.
+pub fn size_clean(b: u64) -> String {
+    let v = b as f64;
+    let k = 1024.0;
+    if !english() {
+        return if v >= k * k * k {
+            unit(v / (k * k * k), 2, "{n} GB")
+        } else if v >= k * k {
+            unit(v / (k * k), 1, "{n} MB")
+        } else if v >= k {
+            unit(v / k, 0, "{n} KB")
+        } else {
+            crate::i18n::tn(b, "{n} byte", "{n} bytes")
+        };
+    }
+    if v >= k * k * k {
+        format!("{:.2} GB", v / (k * k * k)) // not translated: English path
+    } else if v >= k * k {
+        format!("{:.1} MB", v / (k * k)) // not translated: English path
+    } else if v >= k {
+        format!("{:.0} KB", v / k) // not translated: English path
+    } else {
+        format!("{b} Bytes") // not translated: English path
+    }
+}
+
+/// Clean human-readable transfer rate (`30.3 MB/sec`, `512 KB/sec`), avoiding 3-decimal clutter.
+pub fn rate_clean(bps: f64) -> String {
+    if !english() {
+        return if bps >= 1024.0 * 1024.0 {
+            unit(bps / (1024.0 * 1024.0), 1, "{n} MB/sec")
+        } else {
+            unit(bps / 1024.0, 0, "{n} KB/sec")
+        };
+    }
+    if bps >= 1024.0 * 1024.0 {
+        format!("{:.1} MB/sec", bps / (1024.0 * 1024.0)) // not translated: English path
+    } else {
+        format!("{:.0} KB/sec", bps / 1024.0) // not translated: English path
     }
 }
 

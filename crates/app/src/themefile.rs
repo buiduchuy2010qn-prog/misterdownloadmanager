@@ -239,7 +239,7 @@ fn load_in(folder: &Path, id: &str, depth: usize) -> Result<Loaded, String> {
         .map(|ext| folder.join(format!("{id}.{ext}")))
         .find(|p| p.is_file())
         .or_else(|| folder_file(&own));
-    if found.is_none() && id == "fdm-modern" {
+    if id == "fdm-modern" {
         return Ok(Loaded {
             theme: builtin(
                 "fdm-modern",
