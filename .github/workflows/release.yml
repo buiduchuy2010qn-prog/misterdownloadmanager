@@ -13,6 +13,17 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish signed GitHub Release for Cargo.toml version"
+        required: false
+        type: boolean
+        default: true
+      all_platforms:
+        description: "Also build Linux and macOS packages"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -196,6 +207,7 @@ jobs:
 
   linux:
     # The oldest supported Ubuntu: the programs run on its glibc (2.35) and newer.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.all_platforms == true }}
     needs: geo
     runs-on: ubuntu-22.04
     steps:
@@ -235,6 +247,7 @@ jobs:
           path: target/dist/*
 
   macos:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.all_platforms == true }}
     needs: geo
     runs-on: macos-latest
     steps:
@@ -270,11 +283,12 @@ jobs:
   publish:
     permissions:
       contents: write # the release
-      actions: write # rebuilding the website
-      issues: read # the release notes' Thanks to (tools/contributors.py)
+      issues: read
       pull-requests: read
     if: >-
-      always() && startsWith(github.ref, 'refs/tags/') && needs.windows.result == 'success' &&
+      always() &&
+      (startsWith(github.ref, 'refs/tags/') || inputs.publish == true) &&
+      needs.windows.result == 'success' &&
       needs.extension.result == 'success'
     needs: [windows, extension, linux, macos]
     runs-on: ubuntu-latest
@@ -283,8 +297,25 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          name: windows
           path: dist
-          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: extension
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        if: needs.linux.result == 'success'
+        with:
+          name: linux
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        if: needs.macos.result == 'success'
+        with:
+          name: macos
+          path: dist
 
       - name: Publish release
         env:
@@ -292,63 +323,76 @@ jobs:
           MDM_RELEASE_KEY: ${{ secrets.MDM_RELEASE_KEY }}
         shell: pwsh
         run: |
-          # One SHA256SUMS.txt for every file (each build wrote its own).
-          Remove-Item dist/SHA256SUMS*.txt -ErrorAction SilentlyContinue
+          $ErrorActionPreference = 'Stop'
+          $v = [regex]::Match((Get-Content Cargo.toml -Raw), '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+          $tag = if ("${{ github.ref }}" -like "refs/tags/*") { "${{ github.ref_name }}" } else { "v$v" }
+          if ($tag -ne "v$v") { throw "tag $tag but Cargo.toml says $v" }
+
+          # One SHA256SUMS.txt for every release file (each build wrote its own).
+          Remove-Item dist/SHA256SUMS* -ErrorAction SilentlyContinue
+          Remove-Item dist/ota.json -ErrorAction SilentlyContinue
           $files = Get-ChildItem dist -File | Sort-Object Name
-          $sums = $files | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }
-          Set-Content -Encoding ascii dist/SHA256SUMS.txt $sums
-          # Signed with MDM's release key (fingerprint 5826D399249DE856EA087D802E293C28E8A69D74):
-          # MDM updates itself only from a list it signed
-          # (crates/tools/src/update.rs; the public key is crates/tools/keys/mdm-release.asc).
+          $sums = ($files | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }) -join "`n"
+          [IO.File]::WriteAllBytes("dist/SHA256SUMS.txt", [Text.Encoding]::ASCII.GetBytes("$sums`n"))
+
           if ($env:MDM_RELEASE_KEY) {
             $key = Join-Path $env:RUNNER_TEMP "mdm-release.asc"
-            Set-Content -Encoding ascii $key $env:MDM_RELEASE_KEY
+            [IO.File]::WriteAllBytes($key, [Text.Encoding]::ASCII.GetBytes($env:MDM_RELEASE_KEY))
             gpg --batch --quiet --import $key
-            Remove-Item $key
-            gpg --batch --yes --detach-sign --local-user 5826D399249DE856EA087D802E293C28E8A69D74 `
-              --output dist/SHA256SUMS.txt.sig dist/SHA256SUMS.txt
+            Remove-Item $key -Force
+            $fpr = (gpg --with-colons --fingerprint | Select-String '^fpr:' | Select-Object -First 1).Line.Split(':')[9]
+            if (-not $fpr) { throw "no fingerprint found after importing MDM_RELEASE_KEY" }
+            gpg --batch --yes --detach-sign --local-user $fpr --output dist/SHA256SUMS.txt.sig dist/SHA256SUMS.txt
             if ($LASTEXITCODE) { throw "signing SHA256SUMS.txt failed" }
             gpg --batch --verify dist/SHA256SUMS.txt.sig dist/SHA256SUMS.txt
             if ($LASTEXITCODE) { throw "the signature of SHA256SUMS.txt doesn't verify" }
           } else {
-            Write-Warning "MDM_RELEASE_KEY isn't set: this release is unsigned, and MDM won't update to it by itself."
+            throw "MDM_RELEASE_KEY isn't set: refusing to publish an unsigned OTA release."
           }
-          # Notes: the version's section of CHANGELOG.md ("## [X.Y.Z]" up to the next "## "),
-          # else GitHub's list of changes since the last tag; first, the invitation to try the
-          # macOS builds when they are there (Linux's files are no longer "-experimental").
-          $v = "${{ github.ref_name }}".TrimStart("v")
+
           $log = Get-Content CHANGELOG.md -Raw -ErrorAction SilentlyContinue
           $m = [regex]::Match("$log", "(?ms)^## \[$([regex]::Escape($v))\][^\n]*\n(.*?)(?=^## |\z)")
-          $title = "Mister Download Manager ${{ github.ref_name }}"
-          $invite = ""
-          if ($files.Name -like "*-experimental*") {
-            $invite = "**On a Mac?** The ``-experimental`` files are fresh builds for Mac " +
-              "(Apple Silicon and Intel) that we haven't tried ourselves yet. Want to be among " +
-              "the first? Give them a go and tell us how it went in an " +
-              "[issue](https://github.com/${{ github.repository }}/issues).`n`n"
-          }
-          # Last, "Thanks to": everyone who opened a pull request or an issue, or commented, on
-          # GitHub since the previous release (by version) was published, with their avatars and
-          # @-mentions (tools/contributors.py thanks; the maintainer, Claude and bots aren't
-          # counted). Nobody, or GitHub not answering, leaves it out; it never stops the release.
-          $thanks = ""
-          try {
-            $thanks = (python3 tools/contributors.py thanks "${{ github.ref_name }}" | Out-String).Trim()
-          } catch {
-            Write-Warning "The contributors couldn't be listed: $_"
-          }
-          if ($thanks) { $thanks = "`n`n" + $thanks }
-          $all = (Get-ChildItem dist -File).FullName
-          if ($m.Success -and $m.Groups[1].Value.Trim()) {
-            # Links into the repository (docs/x.md) would resolve against the release's page:
-            # point them at the tagged files.
-            $notes = $m.Groups[1].Value.Trim() -replace '\]\((?![a-z]+:|#)([^)\s]+)\)', '](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/$1)'
-            Set-Content -Encoding utf8 notes.md ($invite + $notes + $thanks)
-            gh release create "${{ github.ref_name }}" --latest --title $title --notes-file notes.md $all
+          $title = "Mister Download Manager $tag (Custom FDM Modern + OTA)"
+          $notesBody = if ($m.Success -and $m.Groups[1].Value.Trim()) {
+            $m.Groups[1].Value.Trim() -replace '\]\((?![a-z]+:|#)([^)\s]+)\)', "](https://github.com/${{ github.repository }}/blob/$tag/`$1)"
           } else {
-            Set-Content -Encoding utf8 notes.md ($invite + $thanks.Trim())
-            gh release create "${{ github.ref_name }}" --latest --title $title --notes-file notes.md --generate-notes $all
+            "## Mister Download Manager $tag`n- Intuitive FDM 6.x full-width modern UI with inline Pause/Resume/Folder controls, state-colored progress bars, and clean compact size/speed display`n- Native Win32 ShellExecuteW + ProgId association file opener fix`n- Cryptographically signed Ed25519 in-app OTA auto-updater (ota.json CDN + GitHub Releases)"
           }
-          # The website links to the latest published release: rebuild it now that the files are
-          # there (a release made with this token starts no workflow by itself).
-          gh workflow run pages.yml --ref main
+          [IO.File]::WriteAllBytes("notes.md", [Text.UTF8Encoding]::new($false).GetBytes($notesBody))
+
+          # Static CDN manifest (ota.json) so in-app OTA checks never hit GitHub API rate limits.
+          $signedFiles = Get-ChildItem dist -File | Sort-Object Name
+          $publishedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          $repo = "${{ github.repository }}"
+          $otaObj = [ordered]@{
+            tag_name     = $tag
+            published_at = $publishedAt
+            html_url     = "https://github.com/$repo/releases/tag/$tag"
+            body         = $notesBody
+            assets       = @(
+              $signedFiles | ForEach-Object {
+                [ordered]@{
+                  name                 = $_.Name
+                  browser_download_url = "https://github.com/$repo/releases/download/$tag/$($_.Name)"
+                }
+              }
+            )
+          }
+          $otaJson = $otaObj | ConvertTo-Json -Depth 6
+          [IO.File]::WriteAllBytes("dist/ota.json", [Text.UTF8Encoding]::new($false).GetBytes($otaJson))
+
+          $all = (Get-ChildItem dist -File).FullName
+          $exists = $false
+          $ErrorActionPreference = 'Continue'
+          gh release view $tag >$null 2>&1
+          if ($LASTEXITCODE -eq 0) { $exists = $true }
+          $ErrorActionPreference = 'Stop'
+          if ($exists) {
+            gh release upload $tag $all --clobber
+            if ($LASTEXITCODE) { throw "gh release upload failed" }
+            gh release edit $tag --latest --title $title --notes-file notes.md
+            if ($LASTEXITCODE) { throw "gh release edit failed" }
+          } else {
+            gh release create $tag --target "${{ github.sha }}" --latest --title $title --notes-file notes.md $all
+            if ($LASTEXITCODE) { throw "gh release create failed" }
+          }

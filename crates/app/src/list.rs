@@ -1516,13 +1516,14 @@ fn action_rect(cols: &[(usize, f32, f32)], top: f32, modern: bool) -> Option<Rec
 }
 
 fn action_tooltip(row: &Row) -> String {
-    if row.status_group == "Downloading" {
-        crate::i18n::t("Pause").to_owned()
+    let key = if row.status_group == "Downloading" {
+        "Pause"
     } else if row.can_resume {
-        crate::i18n::t("Resume").to_owned()
+        "Resume"
     } else {
-        crate::i18n::t("Open folder").to_owned()
-    }
+        "Open folder"
+    };
+    crate::i18n::t(key).to_owned()
 }
 
 /// Paints the circular FDM-style inline Pause / Resume / Open Folder button inside `rc` (English).
@@ -1595,15 +1596,17 @@ fn paint_modern_status(
     row: &Row,
 ) -> (String, bool) {
     let pct_str = status_percent(&row.cells[3]).map(|_| row.cells[3].as_str());
+    let dl_key = "Downloading";
+    let paused_key = "Paused";
     let full = match row.status_group {
         "Downloading" => match pct_str {
-            Some(pct) => format!("{}  {}", crate::i18n::t("Downloading"), pct),
-            None if row.cells[3].is_empty() => crate::i18n::t("Downloading").to_owned(),
+            Some(pct) => format!("{}  {}", crate::i18n::t(dl_key), pct),
+            None if row.cells[3].is_empty() => crate::i18n::t(dl_key).to_owned(),
             None => row.cells[3].clone(),
         },
         "Stopped" => match pct_str {
-            Some(pct) => format!("{}  {}", crate::i18n::t("Paused"), pct),
-            None => crate::i18n::t("Paused").to_owned(),
+            Some(pct) => format!("{}  {}", crate::i18n::t(paused_key), pct),
+            None => crate::i18n::t(paused_key).to_owned(),
         },
         _ => row.cells[3].clone(),
     };

@@ -5354,6 +5354,7 @@ impl App {
                 if self.updates.is_none() {
                     self.updates = Some(crate::help::Updates::check(&self.rt, ctx));
                 }
+                self.raise_updates = true;
             }
             Cmd::About => self.about = Some(crate::help::About),
             Cmd::Support => crate::help::support(),
@@ -6781,12 +6782,17 @@ impl App {
             ),
         ];
         let tb: Vec<(Icon, &str, bool)> = buttons.iter().map(|(i, l, e, _)| (*i, *l, *e)).collect();
-        match chrome::toolbar(ui, o, w, &tb) {
+        let ota_ready = self
+            .updates
+            .as_ref()
+            .is_some_and(crate::help::Updates::has_newer);
+        match chrome::toolbar_ota(ui, o, w, &tb, ota_ready) {
             Some(ToolbarEvent::Click(k)) => chosen = Some((buttons[k].3, None)),
             Some(ToolbarEvent::Drop(k, at)) => match buttons[k].0 {
                 Icon::AddTorrent => self.open_popup(Popup::TorrentDrop, at),
                 icon => self.open_popup(Popup::QueueDrop(matches!(icon, Icon::StartQueue)), at),
             },
+            Some(ToolbarEvent::Update) => chosen = Some((Cmd::CheckUpdates, None)),
             None => {}
         }
 

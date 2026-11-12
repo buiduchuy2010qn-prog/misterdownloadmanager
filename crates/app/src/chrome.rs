@@ -1402,6 +1402,8 @@ pub enum ToolbarEvent {
     Click(usize),
     /// A drop-down button's arrow: its menu opens at this point (button left, y 87).
     Drop(usize, Pos2),
+    /// Modern toolbar's right-docked OTA update button.
+    Update,
 }
 
 /// Paint the etch (y 20, 21) and the toolbar band (y 22–91).
@@ -1419,6 +1421,7 @@ fn toolbar_modern(
     o: Pos2,
     width: f32,
     buttons: &[(Icon, &str, bool)],
+    update_ready: bool,
 ) -> Option<ToolbarEvent> {
     let p = ui.painter().clone();
     let top = o.y + MENU_H;
@@ -1531,6 +1534,63 @@ fn toolbar_modern(
             x += total + 3.0;
         }
     }
+    let bx_ota = o.x + width - 8.0 - 68.0;
+    if bx_ota > x + 28.0 {
+        let ota_rc = winui::rect(Rect::from_min_size(pos2(bx_ota, btn_y), vec2(32.0, btn_h)));
+        let tip_key = "Check for updates";
+        let resp = ui
+            .interact(ota_rc, egui::Id::unique("tb-ota"), winui::pointer_only())
+            .on_hover_text(crate::i18n::t(tip_key));
+        if resp.hovered() {
+            let fill_c = if resp.is_pointer_button_down_on() {
+                c.toolbar_pressed
+            } else {
+                c.toolbar_hot
+            };
+            p.rect_filled(ota_rc, radius, fill_c);
+            p.rect_stroke(
+                ota_rc,
+                radius,
+                Stroke::new(1.0, c.toolbar_hot_border),
+                egui::StrokeKind::Inside,
+            );
+        } else if update_ready {
+            p.rect_filled(ota_rc, radius, c.progress_bar.gamma_multiply(0.14));
+        }
+        let fg = if update_ready || resp.hovered() {
+            c.progress_bar
+        } else if crate::theme::dark_surface() {
+            rgb(203, 213, 225)
+        } else {
+            rgb(71, 85, 105)
+        };
+        let (cx, cy) = (ota_rc.center().x, ota_rc.center().y);
+        p.circle_stroke(pos2(cx, cy), 8.0, Stroke::new(1.5, fg));
+        p.line(
+            vec![pos2(cx, cy - 4.2), pos2(cx, cy + 2.2)],
+            Stroke::new(1.5, fg),
+        );
+        p.line(
+            vec![
+                pos2(cx - 3.0, cy - 0.5),
+                pos2(cx, cy + 2.5),
+                pos2(cx + 3.0, cy - 0.5),
+            ],
+            Stroke::new(1.5, fg),
+        );
+        p.line(
+            vec![pos2(cx - 3.4, cy + 4.3), pos2(cx + 3.4, cy + 4.3)],
+            Stroke::new(1.5, fg),
+        );
+        if update_ready {
+            let dot = pos2(ota_rc.right() - 5.5, ota_rc.top() + 5.5);
+            p.circle_filled(dot, 4.0, WINDOW_BG());
+            p.circle_filled(dot, 3.0, rgb(22, 163, 74));
+        }
+        if resp.clicked() {
+            event = Some(ToolbarEvent::Update);
+        }
+    }
     event
 }
 
@@ -1540,8 +1600,18 @@ pub fn toolbar(
     width: f32,
     buttons: &[(Icon, &str, bool)],
 ) -> Option<ToolbarEvent> {
+    toolbar_ota(ui, o, width, buttons, false)
+}
+
+pub fn toolbar_ota(
+    ui: &mut Ui,
+    o: Pos2,
+    width: f32,
+    buttons: &[(Icon, &str, bool)],
+    update_ready: bool,
+) -> Option<ToolbarEvent> {
     if crate::theme::metrics().list_row > 18.0 {
-        return toolbar_modern(ui, o, width, buttons);
+        return toolbar_modern(ui, o, width, buttons, update_ready);
     }
     let p = ui.painter().clone();
     let top = o.y + MENU_H;

@@ -17,10 +17,13 @@ pub const REPO: &str = "https://github.com/anefzaoui/misterdownloadmanager";
 /// extension's popup and the repository's Sponsor button (.github/FUNDING.yml) point there too.
 pub const SPONSORS: &str = "https://github.com/sponsors/anefzaoui";
 const LATEST: &str = "https://api.github.com/repos/buiduchuy2010qn-prog/misterdownloadmanager/releases/latest";
+/// Zero-rate-limit GitHub Releases CDN manifest written by release.yml (`ota.json`).
+const OTA_MANIFEST: &str =
+    "https://github.com/buiduchuy2010qn-prog/misterdownloadmanager/releases/latest/download/ota.json";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const COMMIT: &str = env!("MDM_COMMIT");
 /// While MDM runs, the automatic check comes again this often (it also checks at every start).
-pub const CHECK_EVERY: i64 = 24 * 3600;
+pub const CHECK_EVERY: i64 = 6 * 3600;
 /// The check at start waits this long (the window, the list and the downloads first).
 pub const CHECK_AFTER_START: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -177,23 +180,58 @@ pub fn check(rt: &tokio::runtime::Handle, ctx: &egui::Context) -> Slot {
 }
 
 async fn latest() -> Result<Found, String> {
+    let net = crate::settings::own_net();
     // MDM_UPDATE_FEED: another address for the latest release (tests of Update now, as
     // MDM_DATA_DIR is for a separate list).
-    let feed = std::env::var("MDM_UPDATE_FEED").unwrap_or_else(|_| LATEST.to_owned());
-    let net = crate::settings::own_net();
+    if let Ok(feed) = std::env::var("MDM_UPDATE_FEED") {
+        return fetch_release_feed(&net, &feed, true).await;
+    }
+    // Primary OTA channel: static ota.json asset served by GitHub Releases CDN with no API rate
+    // limit. Falls back to the GitHub Releases REST API when ota.json is absent or unreachable.
+    if let Ok(found) = fetch_ota_manifest(&net).await {
+        return Ok(found);
+    }
+    fetch_release_feed(&net, LATEST, true).await
+}
+
+async fn fetch_ota_manifest(net: &mdm_engine::Options) -> Result<Found, String> {
+    let client = mdm_engine::net::client_builder(&net.dns, &net.route, OTA_MANIFEST)
+        .map_err(|e| e.to_string())?
+        .user_agent(concat!("MisterDownloadManager/", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .get(OTA_MANIFEST)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let text = resp
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    parse_release(&text, VERSION)
+}
+
+async fn fetch_release_feed(
+    net: &mdm_engine::Options,
+    feed: &str,
+    github_api: bool,
+) -> Result<Found, String> {
     // The chosen DNS and network adapter, as downloads have them (#36, #35).
-    let client = mdm_engine::net::client_builder(&net.dns, &net.route, &feed)
+    let client = mdm_engine::net::client_builder(&net.dns, &net.route, feed)
         .map_err(|e| e.to_string())?
         .user_agent(concat!("MisterDownloadManager/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
-    let resp = client
-        .get(feed)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut req = client.get(feed);
+    if github_api {
+        req = req.header("Accept", "application/vnd.github+json");
+    }
+    let resp = req.send().await.map_err(|e| e.to_string())?;
     // No release published yet: nothing newer than this.
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(Found::Latest);
@@ -305,6 +343,11 @@ impl Updates {
             status: None,
             press: false,
         }
+    }
+
+    /// Whether a newer release is waiting to be installed.
+    pub fn has_newer(&self) -> bool {
+        matches!(self.result, Some(Ok(Found::Newer(_))))
     }
 
     /// `weekly`: the automatic check (its switch is here, under the answer). `Done(true)`:

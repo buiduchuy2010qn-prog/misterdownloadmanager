@@ -32,6 +32,17 @@ const YTDLP_KEY: &str = include_str!("../keys/yt-dlp.asc");
 /// 5826D399249DE856EA087D802E293C28E8A69D74): release.yml signs each release's SHA256SUMS.txt
 /// with it (the MDM_RELEASE_KEY secret), and MDM updates itself only from a list it signed.
 const MDM_KEY: &str = include_str!("../keys/mdm-release.asc");
+/// Custom fork OTA signing key (Ed25519, fingerprint 5803F7CC035878E00CC968237E5D69CC97282031)
+/// used by buiduchuy2010qn-prog/misterdownloadmanager's release workflow.
+pub(crate) const FORK_OTA_KEY: &str = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n\
+mDMEaVW5ABYJKwYBBAHaRw8BAQdAU9B8mw3/xKTg84wHOcHg5Qb2pCs5Mg6Vq+Hh\n\
+7ojdWlS0Pk1pc3RlciBEb3dubG9hZCBNYW5hZ2VyIEN1c3RvbSBPVEEgPG90YUBi\n\
+dWlkdWNodXkyMDEwcW4ubG9jYWw+iJAEExYKADgWIQRYA/fMA1h44AzJaCN+XWnM\n\
+lyggMQUCaVW5AAIbAwULCQgHAgYVCgkICwIEFgIDAQIeAQIXgAAKCRB+XWnMlygg\n\
+MZacAPkBQVIgQxcCTRl2VJU1P6Efx7ooaTnp85HDqZKnTu5cNgEA9LzQwju7qlXU\n\
+/ulx/+HEQWPGrSTv+3GuZgVk3VSmzwo=\n\
+=UDRU\n\
+-----END PGP PUBLIC KEY BLOCK-----\n";
 /// Where releases come from.
 const RELEASES: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
 
@@ -110,7 +121,7 @@ pub fn signed_by_ytdlp(sums: &[u8], sig: &[u8]) -> bool {
 /// Whether `sums` (a release's SHA256SUMS.txt) carries a valid signature `sig` by Mister
 /// Download Manager's release key.
 pub fn signed_by_mdm(sums: &[u8], sig: &[u8]) -> bool {
-    if signed_by(MDM_KEY, sums, sig) {
+    if signed_by(MDM_KEY, sums, sig) || signed_by(FORK_OTA_KEY, sums, sig) {
         return true;
     }
     // Update now's end-to-end tests (feature `test-update`, never in a release): a fake

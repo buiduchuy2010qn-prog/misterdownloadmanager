@@ -509,6 +509,10 @@ mod tests {
             "5826D399249DE856EA087D802E293C28E8A69D74"
         );
         assert_eq!(
+            fingerprint(crate::FORK_OTA_KEY.as_bytes()),
+            "5803F7CC035878E00CC968237E5D69CC97282031"
+        );
+        assert_eq!(
             fingerprint(YTDLP_KEY),
             "AC0CBBE6848D6A873464AF4E57CF65933B5A7581"
         );
