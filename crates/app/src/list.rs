@@ -1687,7 +1687,8 @@ fn paint_modern_status(
         &shown,
         fg,
     );
-    (full, shown != full)
+    let cut = shown != full;
+    (full, cut)
 }
 
 fn status_percent(s: &str) -> Option<f32> {

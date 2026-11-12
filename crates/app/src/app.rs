@@ -6952,21 +6952,24 @@ impl App {
         if let Some(pick) = r.pick {
             self.selection.apply(pick, &ids);
         }
-        if let Some(i) = r.row_action {
-            if let Some(&id) = ids.get(i) {
-                let state = self
-                    .items
-                    .iter()
-                    .find(|it| it.id == id)
-                    .map(|it| (it.live.is_some(), it.can_start(), it.status, it.dest.clone()));
-                if let Some((live, can_start, status, dest)) = state {
-                    if live {
-                        self.stop_by_hand(id);
-                    } else if can_start {
-                        self.start(id, false);
-                    } else if status == Status::Complete {
-                        dialogs::show_in_folder(&dest);
-                    }
+        if let Some(i) = r.row_action
+            && let Some(&id) = ids.get(i)
+        {
+            let state = self.items.iter().find(|it| it.id == id).map(|it| {
+                (
+                    it.live.is_some(),
+                    it.can_start(),
+                    it.status,
+                    it.dest.clone(),
+                )
+            });
+            if let Some((live, can_start, status, dest)) = state {
+                if live {
+                    self.stop_by_hand(id);
+                } else if can_start {
+                    self.start(id, false);
+                } else if status == Status::Complete {
+                    dialogs::show_in_folder(&dest);
                 }
             }
         }
