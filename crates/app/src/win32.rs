@@ -1723,10 +1723,193 @@ pub fn tray_icon_held(hwnd: HWND, known: Option<u32>) -> Option<u32> {
     if hwnd.is_null() {
         return None;
     }
-    known
-        .into_iter()
-        .chain(1..=TRAY_ICON_IDS)
-        .find(|id| held(*id))
+    if let Some(id) = known {
+        return held(id).then_some(id);
+    }
+    (1..=TRAY_ICON_IDS).find(|id| held(*id))
+}
+
+/// Whether the shell gives icon `id` of `hwnd` a rectangle (`Shell_NotifyIconGetRect`).
+fn tray_icon_placed(hwnd: HWND, id: u32) -> bool {
+    use windows_sys::Win32::Foundation::S_OK;
+    use windows_sys::Win32::UI::Shell::{NOTIFYICONIDENTIFIER, Shell_NotifyIconGetRect};
+    if hwnd.is_null() {
+        return false;
+    }
+    let nid = NOTIFYICONIDENTIFIER {
+        cbSize: size_of::<NOTIFYICONIDENTIFIER>() as u32,
+        hWnd: hwnd,
+        uID: id,
+        // SAFETY: a plain C struct; zeroed `guidItem` identifies by `(hWnd, uID)`.
+        ..unsafe { zeroed() }
+    };
+    // SAFETY: a plain C struct; all zero is valid.
+    let mut rc: RECT = unsafe { zeroed() };
+    // SAFETY: both pointers are valid local structs for the duration of the call.
+    unsafe { Shell_NotifyIconGetRect(&nid, &mut rc) == S_OK }
+}
+
+struct TrayProbeInner {
+    state: std::sync::Mutex<TrayProbeState>,
+    work_cv: std::sync::Condvar,
+    done_cv: std::sync::Condvar,
+}
+
+#[derive(Clone, Copy)]
+struct TrayProbeState {
+    stop: bool,
+    want_refresh: bool,
+    in_flight: bool,
+    seq: u64,
+    placed: bool,
+    held: bool,
+}
+
+/// Queries `(placed, held)` of the tray icon on a dedicated background thread so a hung or
+/// restarting `explorer.exe` (e.g. Windhawk mods or taskbar restart, where `Shell_NotifyIconW`
+/// and `Shell_NotifyIconGetRect` block up to 4 s per call in `win32u.dll`) never stalls the UI
+/// thread or triggers the 8 s freeze watchdog.
+pub struct TrayProbe {
+    inner: std::sync::Arc<TrayProbeInner>,
+}
+
+impl TrayProbe {
+    pub fn new(hwnd: HWND) -> Self {
+        let inner = std::sync::Arc::new(TrayProbeInner {
+            state: std::sync::Mutex::new(TrayProbeState {
+                stop: false,
+                want_refresh: true,
+                in_flight: false,
+                seq: 0,
+                placed: false,
+                held: false,
+            }),
+            work_cv: std::sync::Condvar::new(),
+            done_cv: std::sync::Condvar::new(),
+        });
+        let worker = std::sync::Arc::clone(&inner);
+        let hwnd_bits = hwnd as isize;
+        let _ = std::thread::Builder::new()
+            .name("mdm-tray-probe".into())
+            .spawn(move || {
+                let mut known_id: Option<u32> = None;
+                let mut logged: Option<(bool, bool)> = None;
+                loop {
+                    let guard = worker.state.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut guard = worker
+                        .work_cv
+                        .wait_while(guard, |s| !s.stop && !s.want_refresh)
+                        .unwrap_or_else(|e| e.into_inner());
+                    if guard.stop {
+                        return;
+                    }
+                    guard.want_refresh = false;
+                    guard.in_flight = true;
+                    drop(guard);
+
+                    let h = hwnd_bits as HWND;
+                    let found = tray_icon_held(h, known_id);
+                    if found.is_some() {
+                        known_id = found;
+                    }
+                    let held = found.is_some();
+                    let placed = if std::env::var_os("MDM_TEST_TRAY_RECT")
+                        .is_some_and(|v| v == "0")
+                    {
+                        false
+                    } else {
+                        found.is_some_and(|id| tray_icon_placed(h, id))
+                    };
+                    if logged != Some((placed, held)) {
+                        logged = Some((placed, held));
+                        tracing::info!(
+                            target: "misterdownloadmanager::tray",
+                            "tray icon: placed {}, held by the shell {}",
+                            placed,
+                            held
+                        );
+                    }
+
+                    let mut guard = worker.state.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.in_flight = false;
+                    guard.placed = placed;
+                    guard.held = held;
+                    guard.seq += 1;
+                    worker.done_cv.notify_all();
+                }
+            });
+
+        let guard = inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = inner.done_cv.wait_timeout_while(
+            guard,
+            std::time::Duration::from_millis(200),
+            |s| s.seq == 0 && !s.stop,
+        );
+        TrayProbe { inner }
+    }
+
+    pub fn poll(&self, refresh: bool) -> (bool, bool) {
+        let mut guard = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        if refresh && !guard.in_flight && !guard.want_refresh {
+            guard.want_refresh = true;
+            self.inner.work_cv.notify_one();
+        }
+        (guard.placed, guard.held)
+    }
+
+    pub fn fresh(&self) -> (bool, bool) {
+        let mut guard = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        let target = if guard.in_flight {
+            guard.seq + 1
+        } else {
+            guard.want_refresh = true;
+            self.inner.work_cv.notify_one();
+            guard.seq + 1
+        };
+        let res = self.inner.done_cv.wait_timeout_while(
+            guard,
+            std::time::Duration::from_millis(250),
+            |s| s.seq < target && !s.stop,
+        );
+        let (guard, timed_out) = match res {
+            Ok((g, to)) => (g, to.timed_out()),
+            Err(e) => {
+                let (g, to) = e.into_inner();
+                (g, to.timed_out())
+            }
+        };
+        if timed_out {
+            (false, false)
+        } else {
+            (guard.placed, guard.held)
+        }
+    }
+
+    pub fn can_update_shell(&self) -> bool {
+        let guard = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        !guard.in_flight && (guard.placed || guard.held)
+    }
+}
+
+impl Drop for TrayProbe {
+    fn drop(&mut self) {
+        let mut guard = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.stop = true;
+        self.inner.work_cv.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod tray_probe_tests {
+    use super::*;
+
+    #[test]
+    fn null_window_probe_never_blocks_and_stops_cleanly() {
+        let probe = TrayProbe::new(std::ptr::null_mut());
+        assert_eq!(probe.poll(true), (false, false));
+        assert_eq!(probe.fresh(), (false, false));
+        assert!(!probe.can_update_shell());
+    }
 }
 
 /// What a borderless window of ours is, for [`popup_window`]: every one is a plain popup

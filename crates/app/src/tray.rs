@@ -109,15 +109,15 @@ pub struct Tray {
     /// Every entry with its English text, to translate again when the language changes.
     labels: Vec<(Entry, &'static str)>,
     /// What [`Tray::visible`] last saw and when: the minimize path asks every frame, and the
-    /// shell shouldn't be asked that often (a second of staleness is enough).
+    /// shell shouldn't be asked that often (a second or two of staleness is enough).
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     visible_checked: std::cell::Cell<Option<(bool, std::time::Instant)>>,
-    /// The shell's last answer, logged when it changes.
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    /// The shell's last answer, logged when it changes (macOS; Windows logs on `probe`).
+    #[cfg(target_os = "macos")]
     answer: std::cell::Cell<Option<ShellIcon>>,
-    /// The icon's id with the shell, once found (`win32::tray_icon_held`).
+    /// Background notification-area probe so a hung Explorer never stalls the UI thread.
     #[cfg(windows)]
-    icon_id: std::cell::Cell<Option<u32>>,
+    probe: crate::win32::TrayProbe,
 }
 
 /// A menu entry whose text is translated.
@@ -128,25 +128,15 @@ enum Entry {
 }
 
 impl Tray {
-    /// What the shell says of the icon now.
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    /// What the shell says of the icon now (macOS: the menu bar item's frame).
+    #[cfg(target_os = "macos")]
     fn shell_icon(&self) -> ShellIcon {
-        // MDM_TEST_TRAY_RECT=0: the shell gives no place for the icon, as the reporters' did for
-        // one behind ^ (the close test, with a real icon the shell holds).
         let placed = self.tray.rect().is_some()
             && std::env::var_os("MDM_TEST_TRAY_RECT").is_none_or(|v| v != "0");
-        #[cfg(windows)]
-        let held = {
-            let id = crate::win32::tray_icon_held(self.tray.window_handle(), self.icon_id.get());
-            if id.is_some() {
-                self.icon_id.set(id);
-            }
-            id.is_some()
-        };
-        // macOS has no other question: the menu bar item's frame is the answer.
-        #[cfg(not(windows))]
-        let held = false;
-        ShellIcon { placed, held }
+        ShellIcon {
+            placed,
+            held: false,
+        }
     }
 
     /// Whether the shell really has the icon, to click. `tray-icon` ignores a failed
@@ -160,33 +150,62 @@ impl Tray {
         if let Some(v) = std::env::var_os("MDM_TEST_TRAY_VISIBLE") {
             return v == "1";
         }
-        if let Some((shown, checked)) = self.visible_checked.get()
-            && checked.elapsed() < std::time::Duration::from_secs(1)
+        #[cfg(windows)]
         {
-            return shown;
+            let now = std::time::Instant::now();
+            let stale = self
+                .visible_checked
+                .get()
+                .is_none_or(|(_, t)| now.duration_since(t) >= std::time::Duration::from_secs(2));
+            let (placed, held) = self.probe.poll(stale);
+            let shown = ShellIcon { placed, held }.reachable();
+            if stale {
+                self.visible_checked.set(Some((shown, now)));
+            }
+            shown
         }
-        self.visible_now()
+        #[cfg(target_os = "macos")]
+        {
+            if let Some((shown, checked)) = self.visible_checked.get()
+                && checked.elapsed() < std::time::Duration::from_secs(1)
+            {
+                return shown;
+            }
+            self.visible_now()
+        }
     }
 
-    /// [`visible`] without the one-second cache: closing asks once and must not use an answer
-    /// from before the icon went away.
+    /// [`visible`] without the cache: closing asks once and must not use an answer from before
+    /// the icon went away (on Windows, bounded to 250 ms via `probe.fresh()` so a hung Explorer
+    /// never freezes the UI thread).
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     pub fn visible_now(&self) -> bool {
         if let Some(v) = std::env::var_os("MDM_TEST_TRAY_VISIBLE") {
             return v == "1";
         }
-        let icon = self.shell_icon();
-        if self.answer.replace(Some(icon)) != Some(icon) {
-            tracing::info!(
-                "tray icon: placed {}, held by the shell {}",
-                icon.placed,
-                icon.held
-            );
+        #[cfg(windows)]
+        {
+            let (placed, held) = self.probe.fresh();
+            let shown = ShellIcon { placed, held }.reachable();
+            self.visible_checked
+                .set(Some((shown, std::time::Instant::now())));
+            shown
         }
-        let shown = icon.reachable();
-        self.visible_checked
-            .set(Some((shown, std::time::Instant::now())));
-        shown
+        #[cfg(target_os = "macos")]
+        {
+            let icon = self.shell_icon();
+            if self.answer.replace(Some(icon)) != Some(icon) {
+                tracing::info!(
+                    "tray icon: placed {}, held by the shell {}",
+                    icon.placed,
+                    icon.held
+                );
+            }
+            let shown = icon.reachable();
+            self.visible_checked
+                .set(Some((shown, std::time::Instant::now())));
+            shown
+        }
     }
 
     /// The icon and its menu; events wake `ctx`. None if the shell refuses the icon (logged).
@@ -303,6 +322,8 @@ impl Tray {
         labels.push((Entry::Sub(downloads.clone()), downloads_label));
         labels.push((Entry::Check(limiter_on.clone()), on_label));
         labels.push((Entry::Check(limiter_off.clone()), off_label));
+        #[cfg(windows)]
+        let probe = crate::win32::TrayProbe::new(tray.window_handle());
         Some(Tray {
             tray,
             tip: Default::default(),
@@ -318,10 +339,10 @@ impl Tray {
             labels,
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             visible_checked: Default::default(),
-            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            #[cfg(target_os = "macos")]
             answer: Default::default(),
             #[cfg(windows)]
-            icon_id: Default::default(),
+            probe,
         })
     }
 
@@ -358,6 +379,10 @@ impl Tray {
             .1
             .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1));
         if last.0 != tip && due {
+            #[cfg(windows)]
+            if !self.probe.can_update_shell() {
+                return;
+            }
             let _ = self.tray.set_tooltip(Some(tip));
             *last = (tip.to_owned(), Some(std::time::Instant::now()));
         }
