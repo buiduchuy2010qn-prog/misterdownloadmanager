@@ -7,16 +7,52 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 fn crashy() -> PathBuf {
-    // target/<profile>/deps/e2e-… → target/<profile>/examples/crashy
-    let mut p = std::env::current_exe().unwrap();
-    p.pop();
-    p.pop();
-    p.push("examples");
-    p.push(if cfg!(windows) {
+    let exe = if cfg!(windows) {
         "crashy.exe"
     } else {
         "crashy"
-    });
+    };
+    let me = std::env::current_exe().unwrap();
+    // Classic layout: `target/<profile>/deps/e2e-…` -> `target/<profile>/examples/crashy`.
+    // Build-dir layout (Cargo 1.99+): `target/<profile>/build/mdm-crash/<hash>/out/e2e-…`.
+    for dir in me.ancestors().skip(1) {
+        let candidate = dir.join("examples").join(exe);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    // Fallback if examples are only placed under `target/<profile>/build/mdm-crash/*/out/`.
+    for dir in me.ancestors().skip(1) {
+        let crate_build = dir.join("build").join("mdm-crash");
+        if let Ok(entries) = std::fs::read_dir(&crate_build) {
+            for entry in entries.flatten() {
+                let out = entry.path().join("out");
+                if let Ok(files) = std::fs::read_dir(&out) {
+                    for file in files.flatten() {
+                        let p = file.path();
+                        let name = p
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let matches = if cfg!(windows) {
+                            name == "crashy.exe"
+                                || (name.starts_with("crashy-") && name.ends_with(".exe"))
+                        } else {
+                            name == "crashy" || (name.starts_with("crashy-") && !name.contains('.'))
+                        };
+                        if matches && p.is_file() {
+                            return p;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut p = me;
+    p.pop();
+    p.pop();
+    p.push("examples");
+    p.push(exe);
     p
 }
 
