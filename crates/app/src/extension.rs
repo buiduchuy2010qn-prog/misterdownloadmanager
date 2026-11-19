@@ -328,7 +328,15 @@ impl Extension {
                 "by-hand",
             )
         {
-            crate::help::open_page(mdm_ipc::extension::GUIDE_DOC);
+            let local_ext = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("extension").join("chromium")))
+                .filter(|d| d.is_dir());
+            if let Some(dir) = local_ext {
+                crate::launch::open(dir);
+            } else {
+                crate::help::open_page(mdm_ipc::extension::GUIDE_DOC);
+            }
         }
         // As wide as their labels in this language (#192), Don't ask again only while no
         // extension has reached MDM.

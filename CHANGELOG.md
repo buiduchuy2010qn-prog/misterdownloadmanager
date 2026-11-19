@@ -5,6 +5,14 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-11-19
+
+### Changed
+
+- **Dedicated Fork Extension ID (`blmdjmhebngbdplfgkeifiiknimefbjh`):** Generated a standalone RSA-2048 key in `extension/manifest.json` and registered `FORK_ID` in `crates/ipc` & `nmhost` so your fork's unpacked Chromium extension never collides with upstream's Chrome Web Store copy.
+- **Stop auto-installing upstream's old `0.5.2` Chrome Web Store extension:** `nmhost --register` no longer writes Chrome's external-extension registry key for upstream's store ID (`ejoleppdfgjdndddcjoehopknmlglojp`) and automatically cleans up any stale entry so Chrome won't reinstall the old upstream extension.
+- **Quick local folder shortcut:** Clicking *Install it by hand* in MDM's browser extension window opens the installed `extension\chromium` folder directly in Explorer when present.
+
 ## [0.5.7] - 2026-11-19
 
 ### Added

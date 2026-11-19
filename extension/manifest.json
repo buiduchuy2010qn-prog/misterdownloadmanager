@@ -5,7 +5,7 @@
     "version": "0.1.0",
     "description": "__MSG_description__",
     "minimum_chrome_version": "116",
-    "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7cH/G9UJ3dVEuG290lFBuVoSaGysWGwchytUKOb3EQAgRyV8AOF7HkzfHZnEtppceD+7E8DrEhn8n5SsC5oEOzSJEo3fd3bL8NtKOaJhso5FfIA4jsp5xBQl1mghJQqQcZuJe5H2atrf64dIJHN1FUEFXrY/vOmOdG7AYntdUmOd6eUJwA+jCvPdQCwOd3IeJ0gJl6exg2xAZeCgB/Ps0mqrApspnuLwpEllaiApMbQOrYh3SeYpI2cfJnHaYWYrSNl7i8Wu8mtNA1nKyKnQxZlOktU4mDtvtSRWdfSCm7rApzKByGbBLqbX+DB3dqxaWFnSb43Aa+hscVvlRhSuLwIDAQAB",
+    "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwWr3FpufQ57FQxztqh0A17s/pb+5sASXI//RKBPozHitmVw4VMoSOzo8Spj11H3uHXeeWMRnq48yX/rmTtpoCEjtBCNqDUU7ssX7PKZRioWVAo9oYLJuimHdcUw1C5Xdk05Gnu4+MIM+ZuUx+ZogzsWxwybsi+DQSdi8m9xpc//RmsmeYzl+AckGeFnNvj3mowOQsdzDj2rp0XGtyO67BEky+5RY9DUoQ3qVVlP7W9Q6OoUpv0Dm+hTs26064YqFlzAsqGs2f9oQPVyW3nUvEipAucyQ181c2jl/2N0AW3l8KSpqdAJZE+ZW91W5WeZaY9A7NkeD8M7SJ9Z4BYParQIDAQAB",
     "permissions": [
         "downloads",
         "contextMenus",

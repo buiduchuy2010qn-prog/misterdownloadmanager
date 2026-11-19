@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 mod win32;
 
 const HOST_NAME: &str = "com.misterdownloadmanager.host";
-use mdm_ipc::extension::{FIREFOX_ID, STORE_ID, STORE_UPDATE_URL, chromium_ids, store_id};
+use mdm_ipc::extension::{FIREFOX_ID, STORE_ID, chromium_ids};
 /// Where each Chromium browser looks for native messaging hosts on Windows, under HKCU (one
 /// user) or HKLM (everyone). Chromium-branded builds (Chromium, Helium, Thorium, and Brave and
 /// Brave Origin with every channel) read Chromium's first, then Chrome's, as most other forks do
@@ -1108,21 +1108,15 @@ fn register(all_users: bool) -> Result<(), String> {
         &ff_path.display().to_string(),
         "/f",
     ])?;
-    // Chrome offers the store's extension once it is listed (never a placeholder ID).
-    if let Some(id) = store_id() {
-        reg(&[
-            "add",
-            &format!(r"{root}\{CHROME_EXTERNAL_KEY}\{id}"),
-            "/v",
-            "update_url",
-            "/t",
-            "REG_SZ",
-            "/d",
-            STORE_UPDATE_URL,
-            "/f",
-            "/reg:32",
-        ])?;
-    }
+    // Custom fork ships its own unpacked Chromium extension (`FORK_ID` in `extension\chromium`):
+    // do not auto-install upstream's Chrome Web Store extension, and remove any stale entry so
+    // Chrome stops pulling the old upstream store copy.
+    let _ = reg(&[
+        "delete",
+        &format!(r"{root}\{CHROME_EXTERNAL_KEY}\{STORE_ID}"),
+        "/f",
+        "/reg:32",
+    ]);
     println!(
         "registered {HOST_NAME} for Chrome, Edge, Brave, Helium and the other Chromium browsers \
          ({}), and for Firefox, Zen and its other forks ({})",
@@ -1276,13 +1270,9 @@ fn register(all_users: bool) -> Result<(), String> {
     if !failed.is_empty() {
         return Err(failed.join("; "));
     }
-    if let (Some(dir), Some(id)) = (chrome_external_dir(all_users), store_id()) {
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        write_json(
-            &dir.join(format!("{id}.json")),
-            &serde_json::json!({ "external_update_url": STORE_UPDATE_URL }),
-        )?;
-        println!("offered the extension to Chrome in {}", dir.display());
+    // Custom fork ships its own unpacked Chromium extension: remove any stale upstream store entry.
+    if let Some(dir) = chrome_external_dir(all_users) {
+        let _ = std::fs::remove_file(dir.join(format!("{STORE_ID}.json")));
     }
     Ok(())
 }
@@ -1390,6 +1380,7 @@ mod tests {
     fn store_and_unpacked_extensions_both_allowed() {
         let manifest = chromium_manifest(&this_program().unwrap());
         for id in [
+            "blmdjmhebngbdplfgkeifiiknimefbjh",
             "ejoleppdfgjdndddcjoehopknmlglojp",
             "oogbclbbninliongijffeeggalppliok",
         ] {

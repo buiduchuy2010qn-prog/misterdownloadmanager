@@ -2,7 +2,10 @@
 //! host (which serves it and notes each browser that starts it) and the app (which offers to
 //! install it until one has).
 
-/// The extension's ID loaded unpacked (the public key in extension/manifest.json).
+/// This custom fork's own Chromium extension ID (derived from the fork RSA public key in
+/// `extension/manifest.json`), kept separate from upstream's unpacked and Chrome Web Store IDs.
+pub const FORK_ID: &str = "blmdjmhebngbdplfgkeifiiknimefbjh";
+/// Upstream's unpacked extension ID (kept allowed for backward compatibility).
 pub const UNPACKED_ID: &str = "oogbclbbninliongijffeeggalppliok";
 /// Its ID in the Chrome Web Store, which signs it with the store's own key
 /// (tools/extension/pack.ps1 leaves the manifest's key out of the store's copy). [`store_id`] is
@@ -31,9 +34,11 @@ pub fn store_id() -> Option<&'static str> {
     valid_id(STORE_ID).then_some(STORE_ID)
 }
 
-/// The Chromium extensions the native host serves: unpacked, and each store's once listed.
+/// The Chromium extensions the native host serves: this fork's own ID, upstream unpacked, and
+/// each store's once listed.
 pub fn chromium_ids() -> Vec<&'static str> {
-    std::iter::once(UNPACKED_ID)
+    [FORK_ID, UNPACKED_ID]
+        .into_iter()
         .chain(store_id())
         .chain(OTHER_STORE_IDS.into_iter().filter(|id| valid_id(id)))
         .collect()
@@ -113,6 +118,7 @@ mod tests {
 
     #[test]
     fn ids_are_chromium_ids() {
+        assert!(valid_id(FORK_ID));
         assert!(valid_id(UNPACKED_ID));
         assert!(!valid_id("STORE_ID_PENDING") && !valid_id("abc"));
         // A placeholder store ID is never served, registered or linked.
@@ -121,15 +127,15 @@ mod tests {
         assert_eq!(store_page().is_some(), store_id().is_some());
     }
 
-    /// The store's copy and the app folder's (unpacked) both reach the host: the manifests'
-    /// allowed_origins and the host's own caller check are this list.
+    /// The fork's own unpacked copy, upstream unpacked, and the store's all reach the host.
     #[test]
     fn store_and_unpacked_both_served() {
+        assert_eq!(FORK_ID, "blmdjmhebngbdplfgkeifiiknimefbjh");
         assert_eq!(STORE_ID, "ejoleppdfgjdndddcjoehopknmlglojp");
         assert_eq!(UNPACKED_ID, "oogbclbbninliongijffeeggalppliok");
         let ids = chromium_ids();
         assert!(
-            ids.contains(&UNPACKED_ID) && ids.contains(&STORE_ID),
+            ids.contains(&FORK_ID) && ids.contains(&UNPACKED_ID) && ids.contains(&STORE_ID),
             "{ids:?}"
         );
         assert_eq!(

@@ -1,6 +1,7 @@
 // Runs extension/background.js against fake Firefox and Chrome APIs (no browser needed):
 //   node tools/extension/test.mjs
 import { readFileSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import vm from "node:vm";
 import assert from "node:assert/strict";
 
@@ -533,9 +534,15 @@ const ok = (what) => {
 // Catch-all `*`, Zalo Web `blob:https://...` direct transfer, `data:` capture, `blob:null` adoption,
 // and Chromium manifest without `proxy` permission (prevents VPN extensions disabling MDM).
 {
-  // 1) Chromium manifest has no required `proxy` permission.
+  // 1) Chromium manifest has no required `proxy` permission and its RSA key derives FORK_ID.
   const crManifest = JSON.parse(readFileSync(new URL("../../extension/manifest.json", import.meta.url), "utf8"));
   assert.ok(!(crManifest.permissions || []).includes("proxy"), "Chromium manifest must not request proxy permission");
+  const extRs = readFileSync(new URL("../../crates/ipc/src/extension.rs", import.meta.url), "utf8");
+  const forkId = /pub const FORK_ID: &str = "([a-p]{32})"/.exec(extRs)[1];
+  const digest = createHash("sha256").update(Buffer.from(crManifest.key, "base64")).digest();
+  let derived = "";
+  for (let i = 0; i < 16; i++) derived += String.fromCharCode(97 + ((digest[i] >> 4) & 0xf), 97 + (digest[i] & 0xf));
+  assert.equal(derived, forkId, "extension/manifest.json key must derive crates/ipc FORK_ID");
 
   // 2) Catch-all `*` catches PDF, Word, PNG, TXT, extensionless files and enables all OPENED MIME types.
   const all = fakeApi({ firefox: false, types: "* ZIP" });
