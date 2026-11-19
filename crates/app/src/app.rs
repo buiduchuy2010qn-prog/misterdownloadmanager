@@ -1347,17 +1347,17 @@ impl App {
         primary.or(secondary)
     }
 
-    /// Slim setup banner below the toolbar while no current fork extension (`>= 0.5.8`) has
+    /// Slim setup banner below the toolbar while no browser extension (Store or fork) has
     /// connected yet. Returns `(banner_height, clicked_cmd)`.
     fn ext_banner(&mut self, ui: &mut Ui, o: Pos2, w: f32) -> (f32, Option<Cmd>) {
         if self.ext_checked.elapsed() >= Duration::from_secs(1) {
             self.ext_checked = Instant::now();
             self.ext_state = crate::extension::state();
         }
-        if self.ext_state != crate::extension::ExtState::Connected {
+        if self.ext_state == crate::extension::ExtState::Missing {
             ui.ctx().request_repaint_after(Duration::from_secs(2));
         }
-        let show = self.ext_state != crate::extension::ExtState::Connected
+        let show = self.ext_state == crate::extension::ExtState::Missing
             && !self.ext_banner_dismissed
             && self.settings.advanced_integration
             && mdm_ipc::portable_dir().is_none();
@@ -1404,12 +1404,7 @@ impl App {
             self.ext_banner_dismissed = true;
         }
 
-        let is_outdated = matches!(self.ext_state, crate::extension::ExtState::Outdated(_));
-        let connect_lbl = if is_outdated {
-            crate::extension::bi("Cập nhật tiện ích", "Update extension")
-        } else {
-            crate::extension::bi("Kết nối ngay", "Connect now")
-        };
+        let connect_lbl = crate::extension::bi("Kết nối ngay", "Connect now");
         let guide_lbl = crate::extension::bi("Hướng dẫn", "Guide");
         let btns = winui::buttons_to_right(
             &p,
@@ -1428,7 +1423,7 @@ impl App {
         )
         .clicked()
         {
-            cmd = Some(Cmd::BrowserExtensionDirect);
+            cmd = Some(Cmd::BrowserExtension);
         }
         if winui::button(
             ui,
@@ -1443,48 +1438,24 @@ impl App {
             cmd = Some(Cmd::UsageGuide);
         }
 
-        let dot_color = if is_outdated {
-            crate::extension::warn_color()
-        } else {
-            winui::accent()
-        };
         let dot_center = winui::rect(egui::Rect::from_center_size(
             pos2(o.x + 16.0, top + EXT_BANNER_H / 2.0),
             egui::vec2(8.0, 8.0),
         ))
         .center();
-        p.circle_filled(dot_center, 4.0, dot_color);
+        p.circle_filled(dot_center, 4.0, winui::accent());
 
-        let msg = match &self.ext_state {
-            crate::extension::ExtState::Outdated(ver) if !ver.is_empty() => {
-                if crate::extension::is_vi() {
-                    format!(
-                        "Tiện ích trình duyệt đang ở bản cũ ({ver}) — chưa bắt tải Zalo/PDF/Word."
-                    )
-                } else {
-                    format!(
-                        "Browser extension is outdated ({ver}) — update to catch Zalo/PDF/Word downloads."
-                    )
-                }
-            }
-            crate::extension::ExtState::Outdated(_) => crate::extension::bi(
-                "Tiện ích trình duyệt đang ở bản cũ — hãy cập nhật để bắt tải Zalo/PDF/Word.",
-                "Browser extension is outdated — update to catch Zalo/PDF/Word downloads.",
-            )
-            .to_owned(),
-            _ => crate::extension::bi(
-                "Chưa kết nối tiện ích trình duyệt — cài 1 lần (20 giây) để tự bắt mọi tải xuống.",
-                "Browser extension not connected — 1-time setup (20s) to catch all browser downloads.",
-            )
-            .to_owned(),
-        };
+        let msg = crate::extension::bi(
+            "Chưa kết nối tiện ích trình duyệt — mở Chrome bấm \"Bật tiện ích\" (tự động) hoặc cài bản có Zalo Web.",
+            "Browser extension not connected — reopen Chrome to enable in 1 click, or open setup guide.",
+        );
         let text_right_limit = (o.x + btns[0].0 - 10.0).max(o.x + 40.0);
         winui::fit(
             ui,
             &p,
             o.x + 28.0,
             winui::baseline_in(top, EXT_BANNER_H),
-            &msg,
+            msg,
             winui::TEXT(),
             text_right_limit,
             "ext-banner-msg",
@@ -1538,33 +1509,24 @@ impl App {
                 winui::SUCCESS(),
                 Cmd::BrowserExtension,
             ),
-            crate::extension::ExtState::Outdated(ver) => {
-                let text = if activity.is_some() {
+            crate::extension::ExtState::Outdated(_) => (
+                if activity.is_some() {
                     format!(
-                        "\u{25cf} {}",
-                        crate::extension::bi("Cập nhật tiện ích", "Update extension")
+                        "\u{2714} {}",
+                        crate::extension::bi("Trình duyệt · +Zalo", "Browser · +Zalo")
                     )
-                } else if !ver.is_empty() {
-                    if crate::extension::is_vi() {
-                        format!("\u{25cf} Tiện ích cũ ({ver}) · Bấm cập nhật")
-                    } else {
-                        format!("\u{25cf} Outdated extension ({ver}) · Update")
-                    }
                 } else {
                     format!(
-                        "\u{25cf} {}",
+                        "\u{2714} {}",
                         crate::extension::bi(
-                            "Tiện ích cũ · Bấm cập nhật",
-                            "Outdated extension · Update"
+                            "Trình duyệt (bản nhanh) · Thêm Zalo",
+                            "Browser (Store) · Add Zalo"
                         )
                     )
-                };
-                (
-                    text,
-                    crate::extension::warn_color(),
-                    Cmd::BrowserExtensionDirect,
-                )
-            }
+                },
+                winui::SUCCESS(),
+                Cmd::BrowserExtensionDirect,
+            ),
             crate::extension::ExtState::Missing => (
                 if activity.is_some() {
                     format!(
@@ -1581,7 +1543,7 @@ impl App {
                     )
                 },
                 winui::accent(),
-                Cmd::BrowserExtensionDirect,
+                Cmd::BrowserExtension,
             ),
         };
 
@@ -8609,9 +8571,8 @@ impl App {
         {
             self.shown_existing = None;
         }
-        // Then the browser extension, once per start until a current fork extension (>= 0.5.8)
-        // has connected (extension.rs). On Chromium-only machines (e.g. Chrome/Edge), jump
-        // straight to the 4-step guide so new users start right away.
+        // Then the browser extension, once per start until any extension (Store or fork) has
+        // connected (extension.rs).
         if self.lang_picker.is_none()
             && self.helpers.is_none()
             && self.settings.language_asked
@@ -8619,11 +8580,7 @@ impl App {
         {
             self.extension_weighed = true;
             if crate::extension::worth_asking(&self.settings) {
-                if let Some(steps) = crate::extension::ChromiumSteps::for_chromium_only_system() {
-                    self.chromium_steps = Some(steps);
-                } else {
-                    self.extension = Some(crate::extension::Extension::new());
-                }
+                self.extension = Some(crate::extension::Extension::new());
             }
         }
         if let Some(d) = &mut self.chromium_steps {

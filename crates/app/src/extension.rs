@@ -187,13 +187,13 @@ fn open_browser(program: &std::path::Path, url: &str) {
 }
 
 /// Whether to offer the extension at this start: browser integration on and registered (not a
-/// portable copy, which registers nothing), no current fork extension (`>= 0.5.8`) seen yet,
+/// portable copy, which registers nothing), no browser extension (Store or fork) seen yet,
 /// not refused.
 pub fn worth_asking(settings: &crate::settings::Settings) -> bool {
     !settings.extension_never_ask
         && settings.advanced_integration
         && mdm_ipc::portable_dir().is_none()
-        && state() != ExtState::Connected
+        && state() == ExtState::Missing
 }
 
 pub struct Extension {
@@ -243,7 +243,7 @@ impl Extension {
     pub fn new() -> Self {
         Extension {
             browsers: detected_browsers(),
-            connected: state() == ExtState::Connected,
+            connected: state() != ExtState::Missing,
             seen: seen_names(),
             registered: registered(),
             looked: std::time::Instant::now(),
@@ -279,7 +279,7 @@ impl Extension {
         if self.looked.elapsed() >= Duration::from_secs(1) || set_up_finished(&mut self.set_up_seen)
         {
             self.looked = std::time::Instant::now();
-            self.connected = state() == ExtState::Connected;
+            self.connected = state() != ExtState::Missing;
             self.seen = seen_names();
             self.registered = registered();
         }
@@ -365,7 +365,9 @@ impl Extension {
         let o = o + egui::vec2(0.0, extra);
 
         // One row per browser: Firefox's family opens addons.mozilla.org, Safari opens its
-        // built-in steps, and Chromium browsers open the in-app fork extension guide.
+        // built-in steps, and Chromium browsers open the 1-click Chrome Web Store page (with the
+        // enhanced Zalo Web manual 4-step guide linked below for users who want blob: capture).
+        let store = mdm_ipc::extension::store_page();
         for (k, (name, program)) in self.browsers.iter().enumerate() {
             let y = BANNER + 16.0 + k as f32 * ROW;
             winui::text_font(
@@ -383,10 +385,15 @@ impl Extension {
             );
             let safari = name == SAFARI;
             let gecko = is_gecko(name);
+            let page = if gecko {
+                Some(mdm_ipc::extension::FIREFOX_PAGE.to_owned())
+            } else {
+                store.clone()
+            };
             let label = if safari {
                 // i18n: button in the browser extension's window, on Safari's row: open the steps that turn the extension on
                 "How to Add"
-            } else if gecko {
+            } else if page.is_some() {
                 // i18n: button in the browser extension's window: open the extension's page in that browser
                 "Add the extension"
             } else {
@@ -424,14 +431,15 @@ impl Extension {
             );
             if add.clicked() && safari {
                 *open_steps = Some(OpenSteps::Safari);
-            } else if add.clicked() && gecko {
-                let url = mdm_ipc::extension::FIREFOX_PAGE;
-                match program {
-                    Some(program) => open_browser(program, url),
-                    None => crate::launch::open(url),
-                }
             } else if add.clicked() {
-                *open_steps = Some(OpenSteps::Chromium(name.clone(), program.clone()));
+                if let Some(url) = &page {
+                    match program {
+                        Some(program) => open_browser(program, url),
+                        None => crate::launch::open(url),
+                    }
+                } else {
+                    *open_steps = Some(OpenSteps::Chromium(name.clone(), program.clone()));
+                }
             }
         }
 
@@ -466,18 +474,28 @@ impl Extension {
                 set_up(ui.ctx());
             }
         }
+        let cur_state = state();
         let (line, color) = if !self.registered {
             (String::new(), muted)
-        } else if self.connected {
+        } else if cur_state == ExtState::Connected {
             (
                 crate::i18n::t("Connected: downloads from your browser now come here.").to_owned(),
+                winui::SUCCESS(),
+            )
+        } else if matches!(cur_state, ExtState::Outdated(_)) {
+            (
+                bi(
+                    "Đã kết nối bản nhanh (Store). Muốn bắt thêm file Zalo Web / ChatGPT, bấm link bản nâng cao bên dưới.",
+                    "Connected via Chrome Web Store. For Zalo Web / ChatGPT blob downloads, use the enhanced link below.",
+                )
+                .to_owned(),
                 winui::SUCCESS(),
             )
         } else {
             (
                 bi(
-                    "Bấm \"Chỉ tôi cách làm\" cạnh trình duyệt để xem hướng dẫn 1 lần (~20 giây). Cài xong sẽ tự báo Đã kết nối.",
-                    "Click \"Show me how\" beside your browser for the 1-time setup guide (~20s). Updates automatically once connected.",
+                    "Mở lại Chrome để tự hiện nút Bật, hoặc bấm \"Thêm tiện ích mở rộng\". Cần Zalo Web? Bấm link bên dưới.",
+                    "Reopen Chrome for the 1-click prompt, or click \"Add the extension\". Need Zalo Web? Use the link below.",
                 )
                 .to_owned(),
                 muted,
@@ -488,14 +506,16 @@ impl Extension {
         }
         winui::etched_h(&p, o.x + 16.0, o.y + h - 46.0, W - 32.0);
         let y = h - 36.0;
-        // Direct link to open the step-by-step manual Chromium extension guide.
+        // Direct link to open the optional 4-step enhanced (Zalo Web / blob:) extension guide.
         if winui::link(
             ui,
             &p,
             o.x + 18.0,
             o.y + y + 17.0,
-            // i18n: link in the browser extension's window: the tutorial that adds it without the browser's store
-            "Install it by hand",
+            bi(
+                "Cài bản nâng cao (Zalo Web)...",
+                "Install enhanced (Zalo Web)...",
+            ),
             "by-hand",
         ) {
             let (name, program) = self.first_chromium_browser();
@@ -701,8 +721,8 @@ impl ChromiumSteps {
         }
     }
 
-    /// Open directly for the primary installed Chromium browser (e.g. from the main-window
-    /// banner or status bar).
+    /// Open directly for the primary installed Chromium browser (e.g. from the status bar
+    /// "Add Zalo" upgrade link).
     pub fn for_primary_chromium() -> Self {
         let browsers = detected_browsers();
         let (name, program) = browsers
@@ -710,21 +730,6 @@ impl ChromiumSteps {
             .find(|(n, _)| n != SAFARI && !is_gecko(n))
             .unwrap_or_else(|| ("Google Chrome".to_owned(), None));
         Self::new(name, program, true)
-    }
-
-    /// On first launch / post-installer: jump straight to the 4-step guide when this computer
-    /// only has Chromium-family browsers (no Firefox/Gecko and no Safari).
-    pub fn for_chromium_only_system() -> Option<Self> {
-        let browsers = detected_browsers();
-        let has_non_chromium = browsers.iter().any(|(n, _)| n == SAFARI || is_gecko(n));
-        if has_non_chromium {
-            return None;
-        }
-        let (name, program) = browsers
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| ("Google Chrome".to_owned(), None));
-        Some(Self::new(name, program, true))
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome<ChromiumStepAction> {
@@ -748,9 +753,9 @@ impl ChromiumSteps {
             self.browser.as_str()
         };
         let title = if is_vi() {
-            format!("Cài tiện ích cho {display_browser}")
+            format!("Bản nâng cao cho {display_browser} (Zalo Web)")
         } else {
-            format!("Add the extension to {display_browser}")
+            format!("Enhanced extension for {display_browser} (Zalo Web)")
         };
         let (existing_dir, folder_str) = chromium_extension_location();
         let program = self.program.clone();
@@ -782,8 +787,8 @@ impl ChromiumSteps {
                     "chromium-banner",
                     &title,
                     bi(
-                        "Chỉ cần làm 1 lần (~20 giây). Các bản cập nhật sau tự làm mới tiện ích, không cần cài lại.",
-                        "One-time setup (~20 seconds). Future app updates refresh the extension folder automatically.",
+                        "Tùy chọn (chỉ cần nếu muốn tự bắt tải Zalo Web / ChatGPT hoặc tránh xung đột VPN). Làm 1 lần ~20 giây.",
+                        "Optional: only needed for Zalo Web / ChatGPT blob downloads or avoiding VPN conflicts (~20 seconds once).",
                     ),
                 );
                 let o = o + egui::vec2(0.0, b_extra);
@@ -1179,10 +1184,10 @@ impl ChromiumSteps {
 /// `(vi_title, en_title, vi_body, en_body)`.
 const GUIDE_SECTIONS: [(&str, &str, &str, &str); 5] = [
     (
-        "1. Bắt tải tự động trên trình duyệt (Zalo Web, PDF, Word, ảnh...)",
-        "1. Automatic browser capture (Zalo Web, PDF, Word, images...)",
-        "Cài tiện ích trình duyệt 1 lần (bấm nút \"Cài tiện ích trình duyệt...\" bên dưới). Mọi tệp tải trên Chrome, Edge, Brave, Firefox sẽ mở hộp thoại chọn thư mục (ổ C/D) giống IDM — bấm \"Hỏi trước khi tải\" ở góc dưới để chuyển nhanh sang tải luôn, hoặc giữ Alt + Click để tải bằng trình duyệt.",
-        "Install the browser extension once (click \"Browser extension...\" below). Downloads in Chrome, Edge, Brave and Firefox open the IDM-style Save dialog to pick any folder/drive — click \"Ask before download\" on the bottom bar to switch to instant mode, or hold Alt + Click to let the browser download.",
+        "1. Bắt tải tự động trên trình duyệt (cả 2 chế độ nhanh & Zalo Web)",
+        "1. Automatic browser capture (1-click Store & optional Zalo Web)",
+        "Cách nhanh: mở Chrome lên và bấm \"Bật tiện ích\" (tự hiện 1 chạm) là bắt tải web thường ngay. Nếu muốn bắt thêm file từ Zalo Web / ChatGPT, bấm \"Cài bản nâng cao (Zalo Web)\" trong cửa sổ Cài tiện ích. Bấm \"Hỏi trước khi tải\" ở góc dưới để đổi giữa chế độ chọn thư mục (ổ C/D) và tải luôn; giữ Alt + Click để tải bằng trình duyệt.",
+        "Quick way: reopen Chrome and click \"Enable extension\" (1-click auto-prompt) for standard web downloads. For Zalo Web / ChatGPT blob downloads, open \"Install enhanced (Zalo Web)\" in Browser extension. Click \"Ask before download\" on the bottom bar to switch between IDM's folder prompt and instant mode; hold Alt + Click to let the browser download.",
     ),
     (
         "2. Tải thủ công & bắt link từ Clipboard",
@@ -1310,11 +1315,10 @@ impl UsageGuide {
     }
 }
 
-/// The browsers whose current fork extension (`>= 0.5.8`) reached the app, by Options' names.
+/// The browsers whose extension (Store or fork) reached the app, by Options' names.
 fn seen_names() -> Vec<String> {
     mdm_ipc::extension::seen_browsers()
         .into_iter()
-        .filter(|(_, v)| version_at_least(v, MIN_FORK_EXT_VERSION))
         .map(|(b, _)| b)
         .collect()
 }

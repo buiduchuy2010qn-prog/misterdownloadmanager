@@ -10,6 +10,10 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 ### Changed
 
 - **Keep minimized window on the Taskbar by default:** Clicking **Minimize (`—`)** now minimizes Mister Download Manager normally to the Windows Taskbar instead of hiding it into the notification area (system tray). Clicking **Close (`×`)** still hides MDM to the tray so browser capture continues running in the background. Users who prefer Minimize-to-tray can re-enable *Options → General → Minimize to the notification area* anytime.
+- **Best-of-both-worlds browser extension setup (1-click auto-offer + optional Zalo Web enhanced copy):**
+  - Restored automatic Chrome Web Store external-extension registration in `nmhost --register` so new users who don't need Zalo Web `blob:` capture simply reopen Chrome and click **Enable extension** in 1 click (zero Developer Mode steps).
+  - Automatically skips re-offering the Store copy when a user already installed the fork's enhanced unpacked extension (`>= 0.5.8`), preventing duplicate Chrome icons.
+  - Users on the 1-click Store extension see a clean green status bar entry (**Trình duyệt (bản nhanh) · Thêm Zalo**) with no nagging banners, and can upgrade to the bundled enhanced Zalo Web extension anytime via the in-app 4-step guide.
 
 ## [0.5.10] - 2026-11-19
 
