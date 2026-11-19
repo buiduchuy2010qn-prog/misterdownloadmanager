@@ -13,7 +13,10 @@ const out = new URL("target/extension/", root);
 const cargo = readFileSync(new URL("Cargo.toml", root), "utf8");
 const version = cargo.match(/^version\s*=\s*"([^"]+)"/m)[1];
 const ipc = readFileSync(new URL("crates/ipc/src/extension.rs", root), "utf8");
-const unpackedId = ipc.match(/UNPACKED_ID: &str = "([a-p]{32})"/)[1];
+const unpackedId = (
+  ipc.match(/FORK_ID: &str = "([a-p]{32})"/) ||
+  ipc.match(/UNPACKED_ID: &str = "([a-p]{32})"/)
+)[1];
 const firefoxId = ipc.match(/FIREFOX_ID: &str = "([^"]+)"/)[1];
 
 // A Chromium extension's ID: the first 32 hex digits of SHA-256 of its public key, 0-f as a-p.
