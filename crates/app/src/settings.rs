@@ -138,8 +138,13 @@ pub struct Settings {
     pub clipboard_autostart: bool,
     /// General: Minimize hides the main window, and a download's progress window, to the
     /// notification area, as closing the main window does (#63). On by default (the
-    /// maintainer's choice), for existing lists too. Only where a tray shows MDM's icon.
+    /// General: Minimize keeps the window on the taskbar by default (`false`); users who want
+    /// Minimize to hide into the notification area can still enable it in Options → General.
     pub minimize_to_tray: bool,
+    /// One-time migration flag so upgrades from <= 0.5.10 switch Minimize back to keeping the
+    /// window on the taskbar while honoring any later explicit choice.
+    #[serde(default)]
+    pub taskbar_minimize_default_applied: bool,
     /// General: closing the main window keeps MDM running, hidden in the notification area (else
     /// closing quits). On by default, for existing lists too, in every copy. Only where a tray
     /// shows MDM's icon.
@@ -383,7 +388,8 @@ impl Default for Settings {
             helpers_asked: false,
             extension_never_ask: false,
             clipboard_autostart: true,
-            minimize_to_tray: true,
+            minimize_to_tray: false,
+            taskbar_minimize_default_applied: true,
             close_to_tray: true,
             mv2_extensions: true,
             advanced_integration: true,

@@ -160,6 +160,10 @@ fn load_from(p: &Path, empty: Loaded) -> Loaded {
                 settings.show_complete = true;
                 settings.idm_dialog_defaults_applied = true;
             }
+            if !settings.taskbar_minimize_default_applied {
+                settings.minimize_to_tray = false;
+                settings.taskbar_minimize_default_applied = true;
+            }
             Loaded {
                 next_id: f.next_id.max(1),
                 items: f.items,
@@ -686,5 +690,25 @@ mod tests {
         assert!(!reloaded.settings.show_start_dialog);
         assert!(reloaded.settings.show_complete);
         assert!(reloaded.settings.idm_dialog_defaults_applied);
+    }
+
+    #[test]
+    fn minimize_stays_on_taskbar_by_default_and_migrates_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("downloads.json");
+        let old = r#"{"next_id":2,"items":[],"settings":{"minimize_to_tray":true},"version":2}"#;
+        std::fs::write(&p, old).unwrap();
+        let upgraded = load_from(&p, empty());
+        assert!(!upgraded.settings.minimize_to_tray);
+        assert!(upgraded.settings.taskbar_minimize_default_applied);
+
+        // Once migrated, explicitly re-enabling Minimize to tray stays enabled.
+        let mut custom = upgraded.settings;
+        custom.minimize_to_tray = true;
+        let layout = crate::list::ListState::default().layout();
+        save_to(&p, 2, &[], &layout, &custom, &[]).unwrap();
+        let reloaded = load_from(&p, empty());
+        assert!(reloaded.settings.minimize_to_tray);
+        assert!(reloaded.settings.taskbar_minimize_default_applied);
     }
 }

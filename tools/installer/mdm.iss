@@ -9,7 +9,7 @@
 ; Windows Credential Manager (misterdownloadmanager --forget-sign-ins).
 
 #ifndef AppVersion
-  #define AppVersion "0.5.10"
+  #define AppVersion "0.5.11"
 #endif
 #define AppName "Mister Download Manager"
 #define AppExe "misterdownloadmanager.exe"

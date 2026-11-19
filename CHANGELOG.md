@@ -5,6 +5,12 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ## [Unreleased]
 
+## [0.5.11] - 2026-11-19
+
+### Changed
+
+- **Keep minimized window on the Taskbar by default:** Clicking **Minimize (`—`)** now minimizes Mister Download Manager normally to the Windows Taskbar instead of hiding it into the notification area (system tray). Clicking **Close (`×`)** still hides MDM to the tray so browser capture continues running in the background. Users who prefer Minimize-to-tray can re-enable *Options → General → Minimize to the notification area* anytime.
+
 ## [0.5.10] - 2026-11-19
 
 ### Added
