@@ -1175,9 +1175,10 @@ impl FileInfo {
                     winui::TEXT(),
                 );
                 let url_rc = r(o, 96.0, 5.0, 366.0, 23.0);
-                let url_box = winui::edit(ui, url_rc, &mut self.url_text, true, false);
+                let url_editable = self.context.import_file.is_none();
+                let url_box = winui::edit(ui, url_rc, &mut self.url_text, url_editable, false);
                 // An edited address is the one downloaded (it was ignored before).
-                if url_box.changed() {
+                if url_editable && url_box.changed() {
                     self.url_edited(ui.ctx());
                 }
                 if self.url_bad {

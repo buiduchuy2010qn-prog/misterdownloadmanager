@@ -5,6 +5,17 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ## [Unreleased]
 
+## [0.5.10] - 2026-11-19
+
+### Added
+
+- **IDM-style "Download File Info" & "Download Complete" dialogs enabled by default (including Zalo Web `blob:` / `data:` downloads):**
+  - Every download — both regular `http(s)://` links and browser `blob:` / `data:` files (Zalo Web, ChatGPT, Gemini, PDF, Word, Excel…) — now opens IDM's **Download File Info** dialog by default so you can choose any save folder or drive (`C:\`, `D:\`, `Downloads`, recent folders), rename the file, tick *Remember this path*, click **Start Download**, **Download Later**, or **Cancel** (cancelling deletes staged/temp files cleanly).
+  - Regular downloads keep IDM's background pre-download (`start_immediately`) while the dialog is open for maximum speed, and finished downloads show the **Download complete** box (**Open / Open folder / Close**, with *Don't show again*).
+  - Upgrades from `<= 0.5.9` automatically enable these IDM defaults once (`idm_dialog_defaults_applied`) while respecting any later user choice.
+- **1-click quick toggle between "Ask before downloading" and "Instant download":**
+  - Added a clickable toggle pill right on the bottom status bar (**Hỏi trước khi tải: Bật** / **Tải luôn (không hỏi)**) and a matching checkable item under **Downloads → Ask before downloading (choose folder)** (*Tải xuống → Hỏi trước khi tải (chọn thư mục)*).
+
 ## [0.5.9] - 2026-11-19
 
 ### Added

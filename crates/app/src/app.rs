@@ -55,6 +55,8 @@ enum Cmd {
     BrowserExtension,
     /// Main banner / status bar → open the 4-step Chromium guide directly for the primary browser.
     BrowserExtensionDirect,
+    /// Downloads menu & status bar → toggle IDM's "Ask before downloading" dialog (`show_start_dialog`).
+    ToggleAskBeforeDownload,
     /// Help → a page of the website (`""` = home).
     HelpPage(&'static str),
     Shortcuts,
@@ -1610,8 +1612,63 @@ impl App {
             resp
         };
 
+        // Quick 1-click toggle between IDM's "Ask before downloading" dialog and instant save.
+        let (ask_label, ask_color) = if self.settings.show_start_dialog {
+            (
+                if activity.is_some() {
+                    crate::extension::bi("Hỏi tải: Bật", "Ask: On")
+                } else {
+                    crate::extension::bi("Hỏi trước khi tải: Bật", "Ask before download: On")
+                },
+                winui::accent(),
+            )
+        } else {
+            (
+                if activity.is_some() {
+                    crate::extension::bi("Tải luôn", "Instant")
+                } else {
+                    crate::extension::bi("Tải luôn (không hỏi)", "Instant download (no prompt)")
+                },
+                winui::MUTED(),
+            )
+        };
+        let ask_right = right_x - drawn.width() - 14.0;
+        let mut ask_clicked = None;
+        let mut act_limit_right = ask_right;
+        if ask_right > o.x + w * 0.36 + 50.0 {
+            let (ask_drawn, _) = winui::text_right_within(
+                p,
+                ask_right,
+                baseline,
+                ask_label,
+                ask_color,
+                o.x + w * 0.36,
+            );
+            let ask_hit = ask_drawn.expand2(egui::vec2(4.0, 2.0));
+            let ask_resp = ui
+                .interact(ask_hit, egui::Id::unique("strip-ask"), winui::pointer_only())
+                .on_hover_text(crate::extension::bi(
+                    "Bấm để chuyển nhanh giữa chế độ Hỏi chọn thư mục (ổ C/D) giống IDM và Tải luôn không hỏi",
+                    "Click to switch between IDM's Ask before downloading dialog and instant download",
+                ));
+            if ask_resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                p.line_segment(
+                    [
+                        pos2(ask_drawn.left(), ask_drawn.bottom() + 1.0),
+                        pos2(ask_drawn.right(), ask_drawn.bottom() + 1.0),
+                    ],
+                    egui::Stroke::new(1.0, ask_color),
+                );
+            }
+            if ask_resp.clicked() {
+                ask_clicked = Some(Cmd::ToggleAskBeforeDownload);
+            }
+            act_limit_right = ask_right - ask_drawn.width() - 14.0;
+        }
+
         if let Some(act) = activity {
-            let act_right = right_x - drawn.width() - 16.0;
+            let act_right = act_limit_right;
             if act_right > o.x + w * 0.36 + 30.0 {
                 let color = if self.fdm_mode() {
                     winui::accent()
@@ -1621,7 +1678,7 @@ impl App {
                 winui::text_right_within(p, act_right, baseline, &act, color, o.x + w * 0.36);
             }
         }
-        resp.clicked().then_some(pill_cmd)
+        ask_clicked.or_else(|| resp.clicked().then_some(pill_cmd))
     }
 
     fn fdm_mode(&self) -> bool {
@@ -1845,7 +1902,11 @@ impl App {
     /// Info": once the address answered (name and size known) and its folder exists, the
     /// download starts behind the dialog; the dialog's answer then keeps, moves or drops it.
     fn start_early(&mut self, fi: &mut FileInfo) {
-        if !self.settings.start_immediately || fi.early.is_some() || !fi.probed() {
+        if !self.settings.start_immediately
+            || fi.early.is_some()
+            || !fi.probed()
+            || fi.context.import_file.is_some()
+        {
             return;
         }
         let dest = fi.dest();
@@ -2789,13 +2850,14 @@ impl App {
         }
     }
 
-    /// Adopt or move a browser `blob:` / `data:` download into MDM's download folder and list.
+    /// Adopt or move a browser `blob:` / `data:` download into MDM's download folder and list,
+    /// honoring IDM's "Show start download dialog" (`show_start_dialog`) so the user can pick any
+    /// destination drive/folder, rename, or cancel before saving.
     fn import_browser_file(&mut self, mut cmd: ipc::Command, ctx: &egui::Context) {
-        let Some(src_raw) = cmd.import_file.take() else {
+        let Some(src_raw) = cmd.import_file.clone() else {
             return;
         };
-        let import_move = cmd.import_move;
-        let src = PathBuf::from(src_raw);
+        let src = PathBuf::from(&src_raw);
         if !src.is_file() {
             tracing::warn!("import_browser_file: missing source {}", src.display());
             return;
@@ -2807,52 +2869,7 @@ impl App {
             .or_else(|| src.file_name().map(|n| n.to_string_lossy().into_owned()))
             .unwrap_or_else(|| "download".to_owned());
         let name = mdm_engine::naming::sanitize(&raw_name);
-        let category = cmd
-            .category
-            .as_deref()
-            .and_then(|k| Category::all().into_iter().find(|c| c.key() == k))
-            .unwrap_or_else(|| Category::of(&name));
-        let dir = cmd
-            .dir
-            .clone()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.settings.category_dir(category, &self.downloads));
-        let _ = std::fs::create_dir_all(&dir);
-        let in_target_dir = src.parent().is_some_and(|p| {
-            if p == dir.as_path() {
-                return true;
-            }
-            match (std::fs::canonicalize(p), std::fs::canonicalize(&dir)) {
-                (Ok(a), Ok(b)) => a == b,
-                _ => false,
-            }
-        });
-        let dest = if !import_move && in_target_dir {
-            src
-        } else {
-            let target = mdm_engine::naming::destination(&dir, &name);
-            let moved = std::fs::rename(&src, &target).or_else(|_| {
-                std::fs::copy(&src, &target).map(|_| {
-                    let _ = std::fs::remove_file(&src);
-                })
-            });
-            match moved {
-                Ok(()) => target,
-                Err(e) => {
-                    tracing::warn!(
-                        "import_browser_file: failed moving {} -> {}: {e}",
-                        src.display(),
-                        target.display()
-                    );
-                    if import_move {
-                        let _ = std::fs::remove_file(&src);
-                        return;
-                    }
-                    src
-                }
-            }
-        };
-        let file_size = std::fs::metadata(&dest)
+        let file_size = std::fs::metadata(&src)
             .ok()
             .map(|m| m.len())
             .or(cmd.size)
@@ -2866,12 +2883,135 @@ impl App {
             .unwrap_or_else(|| {
                 url::Url::parse("https://browser.local/").expect("static fallback URL")
             });
+
+        if self.settings.show_start_dialog && !cmd.silent && !cmd.later {
+            cmd.name = Some(name);
+            cmd.size = Some(file_size);
+            self.open_file_info(dialogs::NewUrl { url, login: None }, cmd, ctx);
+            return;
+        }
+        self.finalize_browser_import(cmd, url, None, true, ctx);
+    }
+
+    /// Finish moving/adopting a browser `blob:` / `data:` file into either a dialog-chosen path
+    /// (`chosen = Some((dest, category, description))`) or the default category folder.
+    fn finalize_browser_import(
+        &mut self,
+        mut cmd: ipc::Command,
+        url: url::Url,
+        chosen: Option<(PathBuf, Category, String)>,
+        show_complete_box: bool,
+        ctx: &egui::Context,
+    ) {
+        let Some(src_raw) = cmd.import_file.take() else {
+            return;
+        };
+        let import_move = cmd.import_move;
+        let src = PathBuf::from(src_raw);
+        if !src.is_file() {
+            tracing::warn!("finalize_browser_import: missing source {}", src.display());
+            return;
+        }
+        let same_path = |a: &std::path::Path, b: &std::path::Path| {
+            if a == b {
+                return true;
+            }
+            match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+                (Ok(ca), Ok(cb)) => ca == cb,
+                _ => false,
+            }
+        };
+        let (dest, category, description) = if let Some((target, category, description)) = chosen {
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let dest = if same_path(&src, &target) {
+                src
+            } else {
+                let moved = std::fs::rename(&src, &target).or_else(|_| {
+                    std::fs::copy(&src, &target).map(|_| {
+                        if import_move {
+                            let _ = std::fs::remove_file(&src);
+                        }
+                    })
+                });
+                match moved {
+                    Ok(()) => target,
+                    Err(e) => {
+                        tracing::warn!(
+                            "finalize_browser_import: failed moving {} -> {}: {e}",
+                            src.display(),
+                            target.display()
+                        );
+                        if import_move {
+                            let _ = std::fs::remove_file(&src);
+                            return;
+                        }
+                        src
+                    }
+                }
+            };
+            (dest, category, description)
+        } else {
+            let raw_name = cmd
+                .name
+                .clone()
+                .filter(|n| !n.trim().is_empty())
+                .or_else(|| src.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "download".to_owned());
+            let name = mdm_engine::naming::sanitize(&raw_name);
+            let category = cmd
+                .category
+                .as_deref()
+                .and_then(|k| Category::all().into_iter().find(|c| c.key() == k))
+                .unwrap_or_else(|| Category::of(&name));
+            let dir = cmd
+                .dir
+                .clone()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| self.settings.category_dir(category, &self.downloads));
+            let _ = std::fs::create_dir_all(&dir);
+            let in_target_dir = src.parent().is_some_and(|p| same_path(p, &dir));
+            let dest = if !import_move && in_target_dir {
+                src
+            } else {
+                let target = mdm_engine::naming::destination(&dir, &name);
+                let moved = std::fs::rename(&src, &target).or_else(|_| {
+                    std::fs::copy(&src, &target).map(|_| {
+                        let _ = std::fs::remove_file(&src);
+                    })
+                });
+                match moved {
+                    Ok(()) => target,
+                    Err(e) => {
+                        tracing::warn!(
+                            "finalize_browser_import: failed moving {} -> {}: {e}",
+                            src.display(),
+                            target.display()
+                        );
+                        if import_move {
+                            let _ = std::fs::remove_file(&src);
+                            return;
+                        }
+                        src
+                    }
+                }
+            };
+            (dest, category, String::new())
+        };
+        let file_size = std::fs::metadata(&dest)
+            .ok()
+            .map(|m| m.len())
+            .or(cmd.size)
+            .unwrap_or(0);
         let silent = cmd.silent;
+        let url_str = url.to_string();
+        let dest_for_box = dest.clone();
         let id = self.push_item(
             url,
             dest,
             category,
-            String::new(),
+            description,
             Some(file_size),
             None,
             cmd,
@@ -2885,7 +3025,17 @@ impl App {
         self.dirty = true;
         if !silent {
             self.selection.set(id);
-            if self.fdm_mode() && !crate::offscreen() {
+            if show_complete_box && self.settings.show_complete && !crate::offscreen() {
+                self.complete.push(Complete {
+                    id,
+                    url: url_str,
+                    path: dest_for_box,
+                    size: file_size,
+                    dont_show: false,
+                    notices: Vec::new(),
+                    seen: false,
+                });
+            } else if self.fdm_mode() && !crate::offscreen() {
                 self.show_window(ctx);
             }
         }
@@ -5760,6 +5910,10 @@ impl App {
                     dialogs::raise(ctx, dialogs::dialog_viewport("chromium-steps"));
                 }
             }
+            Cmd::ToggleAskBeforeDownload => {
+                self.settings.show_start_dialog = !self.settings.show_start_dialog;
+                self.dirty = true;
+            }
             Cmd::HelpPage(page) => crate::help::open_page(page),
             Cmd::Shortcuts => self.shortcuts = Some(crate::help::Shortcuts),
             Cmd::ReportProblem => crate::help::report_problem(),
@@ -6236,6 +6390,13 @@ impl App {
                         Sep,
                         I("S&ettings...", Cmd::LimiterSettings, true, false),
                     ],
+                ),
+                Sep,
+                I(
+                    crate::extension::ask_mode_menu_label(),
+                    Cmd::ToggleAskBeforeDownload,
+                    true,
+                    self.settings.show_start_dialog,
                 ),
                 Sep,
                 I("&Options", Cmd::Options, true, false),
@@ -9145,11 +9306,37 @@ impl App {
                         self.stop(id);
                         self.after_stop.push((id, None));
                     }
+                    if fi.context.import_move
+                        && let Some(src) = fi.context.import_file.as_deref()
+                    {
+                        let _ = std::fs::remove_file(src);
+                    }
                 }
-                Outcome::Done(start) => match fi.early {
-                    Some(id) => self.adopt_early(&fi, id, start),
-                    None => self.add(&mut fi, start),
-                },
+                Outcome::Done(start) => {
+                    if fi.context.import_file.is_some() {
+                        if let Some((cat, dir)) = fi.remembered() {
+                            self.settings.keep_category_dir(
+                                cat,
+                                std::path::Path::new(&dir),
+                                &self.downloads,
+                            );
+                        }
+                        let dest = fi.dest();
+                        let show_box = matches!(start, Start::Now);
+                        self.finalize_browser_import(
+                            fi.context,
+                            fi.url,
+                            Some((dest, fi.category, fi.description)),
+                            show_box,
+                            ctx,
+                        );
+                    } else {
+                        match fi.early {
+                            Some(id) => self.adopt_early(&fi, id, start),
+                            None => self.add(&mut fi, start),
+                        }
+                    }
+                }
             }
         }
         // The next download that waited for Download File Info.
@@ -9446,7 +9633,7 @@ impl App {
                 unseen.push((url, None, inc.cmd));
             }
         }
-        for (url, login, context) in unseen {
+        for (url, login, mut context) in unseen {
             let guessed = context.name.is_none();
             let name = context
                 .name
@@ -9456,6 +9643,42 @@ impl App {
             let category = Category::of(&name);
             let dir = self.settings.category_dir(category, &self.downloads);
             let dest = mdm_engine::naming::destination(&dir, &name);
+            if let Some(src_raw) = context.import_file.take() {
+                let src = PathBuf::from(src_raw);
+                if src.is_file() {
+                    let _ = std::fs::create_dir_all(&dir);
+                    let moved = std::fs::rename(&src, &dest).or_else(|_| {
+                        std::fs::copy(&src, &dest).map(|_| {
+                            if context.import_move {
+                                let _ = std::fs::remove_file(&src);
+                            }
+                        })
+                    });
+                    if moved.is_ok() {
+                        let file_size = std::fs::metadata(&dest)
+                            .ok()
+                            .map(|m| m.len())
+                            .or(context.size)
+                            .unwrap_or(0);
+                        let id = self.push_item(
+                            url,
+                            dest,
+                            category,
+                            String::new(),
+                            Some(file_size),
+                            login,
+                            context,
+                            crate::i18n::mark("from the browser"),
+                        );
+                        if let Some(item) = self.item(id) {
+                            item.status = Status::Complete;
+                            item.downloaded = file_size;
+                            item.last_try = Some(model::now_stamp());
+                        }
+                    }
+                }
+                continue;
+            }
             let size = context.size;
             let id = self.push_item(
                 url,

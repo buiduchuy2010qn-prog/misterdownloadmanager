@@ -174,6 +174,10 @@ pub struct Settings {
     pub set_creation_date: bool,
     /// Downloads.
     pub show_start_dialog: bool,
+    /// One-time migration flag so upgrades from <= 0.5.9 receive IDM's ask-before-download &
+    /// complete-dialog defaults once while still honoring any later user choice.
+    #[serde(default)]
+    pub idm_dialog_defaults_applied: bool,
     pub only_add_to_queue: bool,
     pub start_immediately: bool,
     pub queue_panel_later: bool,
@@ -354,7 +358,7 @@ impl Default for Settings {
             global_only_active: false,
             max_connections: 16,
             many_connections: false,
-            show_complete: false,
+            show_complete: true,
             double_click_open: true,
             confirm_delete: true,
             delete_files_too: false,
@@ -397,7 +401,8 @@ impl Default for Settings {
             url_history: Vec::new(),
             folder_history: Vec::new(),
             set_creation_date: false,
-            show_start_dialog: false,
+            show_start_dialog: true,
+            idm_dialog_defaults_applied: true,
             only_add_to_queue: false,
             start_immediately: true,
             queue_panel_later: true,

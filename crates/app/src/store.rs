@@ -155,6 +155,11 @@ fn load_from(p: &Path, empty: Loaded) -> Loaded {
             if let Some(types) = mdm_ipc::capture::upgraded_types(&settings.auto_types) {
                 settings.auto_types = types.into();
             }
+            if !settings.idm_dialog_defaults_applied {
+                settings.show_start_dialog = true;
+                settings.show_complete = true;
+                settings.idm_dialog_defaults_applied = true;
+            }
             Loaded {
                 next_id: f.next_id.max(1),
                 items: f.items,
@@ -659,5 +664,27 @@ mod tests {
         std::fs::write(&p, b"garbage").unwrap();
         save_to(&p, 5, &[], &layout, &Settings::default(), &[]).unwrap();
         assert_eq!(parse(&backup_path(&p)).unwrap().next_id, 3);
+    }
+
+    #[test]
+    fn idm_dialog_defaults_migrate_once_from_older_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("downloads.json");
+        let old = r#"{"next_id":2,"items":[],"settings":{"show_start_dialog":false,"show_complete":false},"version":2}"#;
+        std::fs::write(&p, old).unwrap();
+        let upgraded = load_from(&p, empty());
+        assert!(upgraded.settings.show_start_dialog);
+        assert!(upgraded.settings.show_complete);
+        assert!(upgraded.settings.idm_dialog_defaults_applied);
+
+        // Once migrated, turning either dialog off stays off across restarts.
+        let mut custom = upgraded.settings;
+        custom.show_start_dialog = false;
+        let layout = crate::list::ListState::default().layout();
+        save_to(&p, 2, &[], &layout, &custom, &[]).unwrap();
+        let reloaded = load_from(&p, empty());
+        assert!(!reloaded.settings.show_start_dialog);
+        assert!(reloaded.settings.show_complete);
+        assert!(reloaded.settings.idm_dialog_defaults_applied);
     }
 }

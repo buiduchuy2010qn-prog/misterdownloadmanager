@@ -136,6 +136,14 @@ pub fn extension_menu_label() -> &'static str {
     bi("&Cài tiện ích trình duyệt...", "&Browser extension...")
 }
 
+/// Downloads menu label for toggling IDM's "Ask before downloading" dialog.
+pub fn ask_mode_menu_label() -> &'static str {
+    bi(
+        "&Hỏi trước khi tải (chọn thư mục)",
+        "&Ask before downloading (choose folder)",
+    )
+}
+
 /// The extensions settings URL for a Chromium-family browser.
 pub fn extensions_url(browser: &str) -> &'static str {
     let lower = browser.to_ascii_lowercase();
@@ -1173,8 +1181,8 @@ const GUIDE_SECTIONS: [(&str, &str, &str, &str); 5] = [
     (
         "1. Bắt tải tự động trên trình duyệt (Zalo Web, PDF, Word, ảnh...)",
         "1. Automatic browser capture (Zalo Web, PDF, Word, images...)",
-        "Cài tiện ích trình duyệt 1 lần (bấm nút \"Cài tiện ích trình duyệt...\" bên dưới). Sau đó mọi tệp bạn tải trên Chrome, Edge, Brave, Firefox sẽ tự động chạy vào MDM. Khi muốn tải bằng trình duyệt, chỉ cần giữ phím Alt + Click.",
-        "Install the browser extension once (click \"Browser extension...\" below). Downloads in Chrome, Edge, Brave and Firefox then go straight into MDM. Hold Alt + Click anytime to download with the browser instead.",
+        "Cài tiện ích trình duyệt 1 lần (bấm nút \"Cài tiện ích trình duyệt...\" bên dưới). Mọi tệp tải trên Chrome, Edge, Brave, Firefox sẽ mở hộp thoại chọn thư mục (ổ C/D) giống IDM — bấm \"Hỏi trước khi tải\" ở góc dưới để chuyển nhanh sang tải luôn, hoặc giữ Alt + Click để tải bằng trình duyệt.",
+        "Install the browser extension once (click \"Browser extension...\" below). Downloads in Chrome, Edge, Brave and Firefox open the IDM-style Save dialog to pick any folder/drive — click \"Ask before download\" on the bottom bar to switch to instant mode, or hold Alt + Click to let the browser download.",
     ),
     (
         "2. Tải thủ công & bắt link từ Clipboard",
