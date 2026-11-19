@@ -5,6 +5,12 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ## [Unreleased]
 
+## [0.5.12] - 2026-11-19
+
+### Fixed
+
+- **Always register Chrome's 1-click external extension offer across all profiles:** `nmhost --register` no longer skips writing Chrome's external extension key when another Chrome profile on the same PC has already loaded the fork's Zalo Web extension. Because Chrome tracks uninstalled external extensions per-profile, profiles already using the fork copy never get duplicate icons while every other Chrome profile automatically receives the 1-click *"Enable extension"* prompt.
+
 ## [0.5.11] - 2026-11-19
 
 ### Changed
