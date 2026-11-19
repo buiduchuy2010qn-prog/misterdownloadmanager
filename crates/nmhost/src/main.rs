@@ -1650,6 +1650,7 @@ mod tests {
     #[test]
     fn a_refusal_says_which_rule() {
         let rules = mdm_ipc::capture::CaptureRules {
+            auto_types: "ZIP EXE".into(),
             browsers: vec![("Microsoft Edge".into(), false)],
             ..Default::default()
         };

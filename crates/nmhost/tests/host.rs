@@ -86,9 +86,9 @@ fn run(
     (replies, ok)
 }
 
-/// #382: nothing edited in Options. A model is taken, a picture stays with the browser.
+/// Catch-all (`*`) default: both models and images (plus documents/extensionless files) are taken.
 #[test]
-fn the_default_list_takes_a_model_and_leaves_a_picture() {
+fn the_default_list_takes_every_file_type() {
     let dir = data_dir("default-types", serde_json::json!({}));
     let app = fake_app(&dir, "ok");
     let offer = |name: &str| {
@@ -108,8 +108,12 @@ fn the_default_list_takes_a_model_and_leaves_a_picture() {
         app.recv_timeout(Duration::from_secs(5)).unwrap()["name"],
         "model.Q4_K_M.gguf"
     );
-    assert_ne!(replies[1]["ok"], true, "{:?}", replies[1]);
-    assert!(app.recv_timeout(Duration::from_millis(300)).is_err());
+    assert_eq!(replies[1]["ok"], true, "{:?}", replies[1]);
+    assert_eq!(
+        app.recv_timeout(Duration::from_secs(5)).unwrap()["name"],
+        "photo.jpg"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
