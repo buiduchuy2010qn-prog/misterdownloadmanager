@@ -2401,6 +2401,12 @@ impl App {
         if cmd.start_queue {
             self.start_queue(0);
         }
+        // From the browser (`blob:` / `data:` downloads staged by nmhost or saved by the
+        // browser): move/adopt the file into MDM's folder and record it as complete.
+        if cmd.import_file.is_some() {
+            self.import_browser_file(cmd, ctx);
+            return;
+        }
         // A magnet link or a .torrent file (browser, command line, file association): Add
         // torrent shows what it holds.
         if let Some(m) = cmd.url.as_deref().filter(|u| {
@@ -2497,6 +2503,108 @@ impl App {
             }
         } else {
             self.open_file_info(dialogs::NewUrl { url, login: None }, cmd, ctx);
+        }
+    }
+
+    /// Adopt or move a browser `blob:` / `data:` download into MDM's download folder and list.
+    fn import_browser_file(&mut self, mut cmd: ipc::Command, ctx: &egui::Context) {
+        let Some(src_raw) = cmd.import_file.take() else {
+            return;
+        };
+        let import_move = cmd.import_move;
+        let src = PathBuf::from(src_raw);
+        if !src.is_file() {
+            tracing::warn!("import_browser_file: missing source {}", src.display());
+            return;
+        }
+        let raw_name = cmd
+            .name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .or_else(|| src.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "download".to_owned());
+        let name = mdm_engine::naming::sanitize(&raw_name);
+        let category = cmd
+            .category
+            .as_deref()
+            .and_then(|k| Category::all().into_iter().find(|c| c.key() == k))
+            .unwrap_or_else(|| Category::of(&name));
+        let dir = cmd
+            .dir
+            .clone()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.settings.category_dir(category, &self.downloads));
+        let _ = std::fs::create_dir_all(&dir);
+        let in_target_dir = src.parent().is_some_and(|p| {
+            if p == dir.as_path() {
+                return true;
+            }
+            match (std::fs::canonicalize(p), std::fs::canonicalize(&dir)) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => false,
+            }
+        });
+        let dest = if !import_move && in_target_dir {
+            src
+        } else {
+            let target = mdm_engine::naming::destination(&dir, &name);
+            let moved = std::fs::rename(&src, &target).or_else(|_| {
+                std::fs::copy(&src, &target).map(|_| {
+                    let _ = std::fs::remove_file(&src);
+                })
+            });
+            match moved {
+                Ok(()) => target,
+                Err(e) => {
+                    tracing::warn!(
+                        "import_browser_file: failed moving {} -> {}: {e}",
+                        src.display(),
+                        target.display()
+                    );
+                    if import_move {
+                        let _ = std::fs::remove_file(&src);
+                        return;
+                    }
+                    src
+                }
+            }
+        };
+        let file_size = std::fs::metadata(&dest)
+            .ok()
+            .map(|m| m.len())
+            .or(cmd.size)
+            .unwrap_or(0);
+        let url = cmd
+            .url
+            .as_deref()
+            .or(cmd.referer.as_deref())
+            .and_then(|u| url::Url::parse(u.trim()).ok())
+            .filter(mdm_engine::supported)
+            .unwrap_or_else(|| {
+                url::Url::parse("https://browser.local/").expect("static fallback URL")
+            });
+        let silent = cmd.silent;
+        let id = self.push_item(
+            url,
+            dest,
+            category,
+            String::new(),
+            Some(file_size),
+            None,
+            cmd,
+            crate::i18n::mark("from the browser"),
+        );
+        if let Some(item) = self.item(id) {
+            item.status = Status::Complete;
+            item.downloaded = file_size;
+            item.last_try = Some(model::now_stamp());
+        }
+        self.dirty = true;
+        if !silent {
+            self.selection.set(id);
+            if self.fdm_mode() && !crate::offscreen() {
+                self.show_window(ctx);
+            }
         }
     }
 

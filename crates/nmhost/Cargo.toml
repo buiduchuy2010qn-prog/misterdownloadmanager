@@ -13,6 +13,7 @@ name = "misterdownloadmanager-nmhost"
 path = "src/main.rs"
 
 [dependencies]
+base64.workspace = true
 mdm-ipc.workspace = true
 serde.workspace = true
 serde_json.workspace = true

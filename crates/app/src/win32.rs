@@ -1723,10 +1723,12 @@ pub fn tray_icon_held(hwnd: HWND, known: Option<u32>) -> Option<u32> {
     if hwnd.is_null() {
         return None;
     }
-    if let Some(id) = known {
-        return held(id).then_some(id);
+    if let Some(id) = known
+        && held(id)
+    {
+        return Some(id);
     }
-    (1..=TRAY_ICON_IDS).find(|id| held(*id))
+    (1..=TRAY_ICON_IDS).find(|id| known != Some(*id) && held(*id))
 }
 
 /// Whether the shell gives icon `id` of `hwnd` a rectangle (`Shell_NotifyIconGetRect`).
@@ -1813,8 +1815,7 @@ impl TrayProbe {
                         known_id = found;
                     }
                     let held = found.is_some();
-                    let placed = if std::env::var_os("MDM_TEST_TRAY_RECT")
-                        .is_some_and(|v| v == "0")
+                    let placed = if std::env::var_os("MDM_TEST_TRAY_RECT").is_some_and(|v| v == "0")
                     {
                         false
                     } else {
@@ -1840,11 +1841,12 @@ impl TrayProbe {
             });
 
         let guard = inner.state.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = inner.done_cv.wait_timeout_while(
-            guard,
-            std::time::Duration::from_millis(200),
-            |s| s.seq == 0 && !s.stop,
-        );
+        let _ =
+            inner
+                .done_cv
+                .wait_timeout_while(guard, std::time::Duration::from_millis(200), |s| {
+                    s.seq == 0 && !s.stop
+                });
         TrayProbe { inner }
     }
 
@@ -1871,18 +1873,12 @@ impl TrayProbe {
             std::time::Duration::from_millis(250),
             |s| s.seq < target && !s.stop,
         );
-        let (guard, timed_out) = match res {
-            Ok((g, to)) => (g, to.timed_out()),
-            Err(e) => {
-                let (g, to) = e.into_inner();
-                (g, to.timed_out())
-            }
+        let guard = match res {
+            Ok((g, _)) => g,
+            Err(e) => e.into_inner().0,
         };
-        if timed_out {
-            (false, false)
-        } else {
-            (guard.placed, guard.held)
-        }
+        // On timeout, keep the last known shell state instead of forcing exit during a brief Explorer hiccup.
+        (guard.placed, guard.held)
     }
 
     pub fn can_update_shell(&self) -> bool {
@@ -5006,7 +5002,11 @@ pub fn open_file_native(path: &std::path::Path) -> Result<(), String> {
         return Ok(());
     }
     if rc == 27 || rc == 31 {
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()).filter(|e| !e.is_empty()) {
+        if let Some(ext) = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .filter(|e| !e.is_empty())
+        {
             let key = format!("Software\\Classes\\.{ext}");
             let prog_id = reg_string_in(HKEY_CURRENT_USER, &key, "")
                 .filter(|s| !s.is_empty())
@@ -5038,13 +5038,23 @@ pub fn open_file_native(path: &std::path::Path) -> Result<(), String> {
                 }
             }
         }
-        let _ = std::process::Command::new("rundll32")
-            .arg("shell32.dll,OpenAs_RunDLL")
-            .arg(path)
-            .spawn();
-        return Ok(());
+        use std::os::windows::process::CommandExt;
+        let mut cmd = std::process::Command::new("rundll32");
+        cmd.arg("shell32.dll,OpenAs_RunDLL");
+        // OpenAs_RunDLL parses the remainder verbatim; quoting paths with spaces breaks it.
+        cmd.raw_arg(path.as_os_str());
+        return cmd.spawn().map(|_| ()).map_err(|e| e.to_string());
     }
-    Err(std::io::Error::last_os_error().to_string())
+    let msg = match rc {
+        2 => "file not found",
+        3 => "path not found",
+        5 => "access denied",
+        8 => "not enough memory",
+        26 => "sharing violation",
+        32 => "DLL not found",
+        _ => "Windows shell could not open the file",
+    };
+    Err(format!("{msg} (ShellExecuteW code {rc})"))
 }
 
 /// Who opens a folder, asked of `executable_for(class, verb)` as the shell reads it: a folder is

@@ -7,21 +7,19 @@
 
 use serde::Deserialize;
 
-/// Options → File types defaults: IDM 6.42's; TORRENT (a .torrent the browser hands over opens
-/// Add torrent, #39); and today's installers, packages and archives (macOS DMG and PKG, Linux
-/// DEB, RPM and AppImage, Windows MSIX, APPX and CAB, Java's JAR, XZ, Zstandard and their tarballs)
-/// and open audio and video formats (WEBM, FLAC, OPUS; #208); and what people fetch by the
-/// gigabyte today (#382): AI models and datasets, 3D and CAD, camera RAW and design files, books
-/// and Office files, disk images and split archives. Never what a browser saves as part of
-/// everyday browsing (pages, scripts, plain text, web images) or installs itself (XPI, CRX).
-pub const DEFAULT_AUTO_TYPES: &str = "00* 3DM 3DS 3GP 3MF 7Z AAB AAC ABC ACE AFDESIGN AFPHOTO AI AIF AIFF APE APK APKM APKS APPIMAGE APPX APPXBUNDLE ARJ ARROW ARW ASF AU AVI AVRO AZW AZW3 BAK BAM BIN BLEND BZ BZ2 C4D CAB CAF CBR CBZ CCD CHD CKPT CPIO CR2 CR3 CRAM CSO DAE DAT DCM DDS DEB DFF DIVX DJVU DMG DNG DOC DOCX DSF DWG DXF EPS EPUB EXE EXR F3D F4V FASTA FASTQ FB2 FBX FEATHER FIG FITS FLAC FLATPAK FQ GCODE GCZ GEM GGML GGUF GLB GLTF GPKG GRIB GRIB2 GZ GZIP H5 HDF5 HDR IGES IGS IMG INDD IPA ISO ISZ JAR JOBLIB JSONL KERAS KRA LAS LAZ LLAMAFILE LWO LZ LZ4 LZH LZMA M2T M2TS M2V M4A M4B M4V MA MAT MAX MB MBTILES MDF MDS MID MIDI MKA MKV MLMODEL MOBI MOV MP3 MP4 MPA MPE MPEG MPG MSI MSIX MSIXBUNDLE MSP MSU MTS MXF NC NDJSON NEF NEMO NII NPY NPZ NRG NSP NSZ NUPKG OBJ ODP ODS ODT OGG OGM OGV ONNX OPUS ORC ORF OTF OVA OVF PAK PARQUET PB PBF PDF PICKLE PK3 PK4 PKG PKL PLJ PLY POTX PPS PPSX PPT PPTX PSB PSD PT PTH QCOW QCOW2 QT R0* R1* R2* R3* R4* R5* R6* R7* R8* R9* RA RAF RAR RDS RM RMVB RPM RTF RUN RVZ RW2 SAFETENSORS SEA SF2 SFZ SHP SIT SITX SKETCH SKP SLDASM SLDPRT SNAP SQLITE SQLITE3 STEP STL STP TAR TBZ TBZ2 TFLITE TGA TGZ TIF TIFF TLZ TORRENT TTA TTC TTF TXZ TZST UNITYPACKAGE USD USDA USDC USDZ VDB VDI VHD VHDX VMDK VOB VPK VSIX WAV WBFS WEBM WHL WIM WMA WMV WRL WTV WUA WV X3D XAPK XCF XCI XLS XLSB XLSM XLSX XZ Z Z0* ZIP ZIPX ZPR ZST ZTL";
+/// Options → File types defaults: `*` (catch every browser download regardless of extension,
+/// including extensionless files and PDF/Office/web app downloads) followed by the standard
+/// extension list so clipboard auto-capture stays selective (`clipboard_type`).
+pub const DEFAULT_AUTO_TYPES: &str = "* 00* 3DM 3DS 3GP 3MF 7Z AAB AAC ABC ACE AFDESIGN AFPHOTO AI AIF AIFF APE APK APKM APKS APPIMAGE APPX APPXBUNDLE ARJ ARROW ARW ASF AU AVI AVRO AZW AZW3 BAK BAM BIN BLEND BZ BZ2 C4D CAB CAF CBR CBZ CCD CHD CKPT CPIO CR2 CR3 CRAM CSO DAE DAT DCM DDS DEB DFF DIVX DJVU DMG DNG DOC DOCX DSF DWG DXF EPS EPUB EXE EXR F3D F4V FASTA FASTQ FB2 FBX FEATHER FIG FITS FLAC FLATPAK FQ GCODE GCZ GEM GGML GGUF GLB GLTF GPKG GRIB GRIB2 GZ GZIP H5 HDF5 HDR IGES IGS IMG INDD IPA ISO ISZ JAR JOBLIB JSONL KERAS KRA LAS LAZ LLAMAFILE LWO LZ LZ4 LZH LZMA M2T M2TS M2V M4A M4B M4V MA MAT MAX MB MBTILES MDF MDS MID MIDI MKA MKV MLMODEL MOBI MOV MP3 MP4 MPA MPE MPEG MPG MSI MSIX MSIXBUNDLE MSP MSU MTS MXF NC NDJSON NEF NEMO NII NPY NPZ NRG NSP NSZ NUPKG OBJ ODP ODS ODT OGG OGM OGV ONNX OPUS ORC ORF OTF OVA OVF PAK PARQUET PB PBF PDF PICKLE PK3 PK4 PKG PKL PLJ PLY POTX PPS PPSX PPT PPTX PSB PSD PT PTH QCOW QCOW2 QT R0* R1* R2* R3* R4* R5* R6* R7* R8* R9* RA RAF RAR RDS RM RMVB RPM RTF RUN RVZ RW2 SAFETENSORS SEA SF2 SFZ SHP SIT SITX SKETCH SKP SLDASM SLDPRT SNAP SQLITE SQLITE3 STEP STL STP TAR TBZ TBZ2 TFLITE TGA TGZ TIF TIFF TLZ TORRENT TTA TTC TTF TXZ TZST UNITYPACKAGE USD USDA USDC USDZ VDB VDI VHD VHDX VMDK VOB VPK VSIX WAV WBFS WEBM WHL WIM WMA WMV WRL WTV WUA WV X3D XAPK XCF XCI XLS XLSB XLSM XLSX XZ Z Z0* ZIP ZIPX ZPR ZST ZTL";
 
-/// The lists earlier versions started with: IDM 6.42's (MDM 0.2.x), with TORRENT (#39), then
-/// with today's packages and open formats (#208). A saved list equal to one of them was never edited, and becomes today's (`upgraded_types`).
-const EARLIER_AUTO_TYPES: [&str; 3] = [
+/// The lists earlier versions started with: IDM 6.42's (MDM 0.2.x), with TORRENT (#39), with
+/// today's packages and open formats (#208), then with #382's types before catch-all `*`. A saved
+/// list equal to one of them was never edited, and becomes today's (`upgraded_types`).
+const EARLIER_AUTO_TYPES: [&str; 4] = [
     "3GP 7Z AAC ACE AIF APK ARJ ASF AVI BIN BZ2 EXE GZ GZIP IMG ISO LZH M4A M4V MKV MOV MP3 MP4 MPA MPE MPEG MPG MSI MSU OGG OGV PDF PLJ PPS PPT QT R0* R1* RA RAR RM RMVB SEA SIT SITX TAR TIF TIFF WAV WMA WMV Z ZIP",
     "3GP 7Z AAC ACE AIF APK ARJ ASF AVI BIN BZ2 EXE GZ GZIP IMG ISO LZH M4A M4V MKV MOV MP3 MP4 MPA MPE MPEG MPG MSI MSU OGG OGV PDF PLJ PPS PPT QT R0* R1* RA RAR RM RMVB SEA SIT SITX TAR TIF TIFF TORRENT WAV WMA WMV Z ZIP",
     "3GP 7Z AAC ACE AIF APK APPIMAGE APPX APPXBUNDLE ARJ ASF AVI BIN BZ2 CAB DEB DMG EXE FLAC GZ GZIP IMG ISO JAR LZH M4A M4V MKV MOV MP3 MP4 MPA MPE MPEG MPG MSI MSIX MSU OGG OGV OPUS PDF PKG PLJ PPS PPT QT R0* R1* RA RAR RM RMVB RPM SEA SIT SITX TAR TGZ TIF TIFF TORRENT TXZ WAV WEBM WMA WMV XZ Z ZIP ZST",
+    "00* 3DM 3DS 3GP 3MF 7Z AAB AAC ABC ACE AFDESIGN AFPHOTO AI AIF AIFF APE APK APKM APKS APPIMAGE APPX APPXBUNDLE ARJ ARROW ARW ASF AU AVI AVRO AZW AZW3 BAK BAM BIN BLEND BZ BZ2 C4D CAB CAF CBR CBZ CCD CHD CKPT CPIO CR2 CR3 CRAM CSO DAE DAT DCM DDS DEB DFF DIVX DJVU DMG DNG DOC DOCX DSF DWG DXF EPS EPUB EXE EXR F3D F4V FASTA FASTQ FB2 FBX FEATHER FIG FITS FLAC FLATPAK FQ GCODE GCZ GEM GGML GGUF GLB GLTF GPKG GRIB GRIB2 GZ GZIP H5 HDF5 HDR IGES IGS IMG INDD IPA ISO ISZ JAR JOBLIB JSONL KERAS KRA LAS LAZ LLAMAFILE LWO LZ LZ4 LZH LZMA M2T M2TS M2V M4A M4B M4V MA MAT MAX MB MBTILES MDF MDS MID MIDI MKA MKV MLMODEL MOBI MOV MP3 MP4 MPA MPE MPEG MPG MSI MSIX MSIXBUNDLE MSP MSU MTS MXF NC NDJSON NEF NEMO NII NPY NPZ NRG NSP NSZ NUPKG OBJ ODP ODS ODT OGG OGM OGV ONNX OPUS ORC ORF OTF OVA OVF PAK PARQUET PB PBF PDF PICKLE PK3 PK4 PKG PKL PLJ PLY POTX PPS PPSX PPT PPTX PSB PSD PT PTH QCOW QCOW2 QT R0* R1* R2* R3* R4* R5* R6* R7* R8* R9* RA RAF RAR RDS RM RMVB RPM RTF RUN RVZ RW2 SAFETENSORS SEA SF2 SFZ SHP SIT SITX SKETCH SKP SLDASM SLDPRT SNAP SQLITE SQLITE3 STEP STL STP TAR TBZ TBZ2 TFLITE TGA TGZ TIF TIFF TLZ TORRENT TTA TTC TTF TXZ TZST UNITYPACKAGE USD USDA USDC USDZ VDB VDI VHD VHDX VMDK VOB VPK VSIX WAV WBFS WEBM WHL WIM WMA WMV WRL WTV WUA WV X3D XAPK XCF XCI XLS XLSB XLSM XLSX XZ Z Z0* ZIP ZIPX ZPR ZST ZTL",
 ];
 
 /// Today's default list when `saved` (Options → File types as saved) is an earlier version's
@@ -289,8 +287,12 @@ pub fn merge_sites(sites: &str, text: &str) -> (String, usize) {
     (out.join(" "), added)
 }
 
-/// Does `name`'s extension appear in `types` (Options → File types: `EXE ZIP R0*`)?
+/// Does `name`'s extension appear in `types` (Options → File types: `*`, `EXE ZIP R0*`)?
+/// A lone `*` catches every browser download, including files without an extension.
 pub fn type_listed(types: &str, name: &str) -> bool {
+    if types.split_whitespace().any(|t| t == "*") {
+        return true;
+    }
     let Some((_, ext)) = name.rsplit_once('.') else {
         return false;
     };
@@ -399,7 +401,7 @@ pub fn address_matches(pattern: &str, url: &str) -> bool {
 pub fn clipboard_type(types: &str, name: &str) -> bool {
     let own: Vec<&str> = types.split_whitespace().filter(|t| *t != "*").collect();
     let browser_only =
-        type_listed(DEFAULT_AUTO_TYPES, name) && !type_listed(EARLIER_AUTO_TYPES[2], name);
+        type_listed(EARLIER_AUTO_TYPES[3], name) && !type_listed(EARLIER_AUTO_TYPES[2], name);
     !browser_only && type_listed(&own.join(" "), name)
 }
 
@@ -574,7 +576,11 @@ mod tests {
         );
         assert_eq!(
             r.accepts("https://example.com/page.html", "page.html", CHROME),
-            Err(Declined::FileType)
+            Ok(())
+        );
+        assert_eq!(
+            r.accepts("https://example.com/download", "download", CHROME),
+            Ok(())
         );
         // #39: a .torrent, by default (Add torrent shows what it holds); a list saved before keeps
         // what it had.
@@ -743,21 +749,23 @@ mod tests {
             "icon.svg",
             "addon.xpi",
             "addon.crx",
+            "no_extension",
         ] {
-            assert!(!r.auto_type(name), "{name}");
+            assert!(r.auto_type(name), "{name}");
         }
     }
 
     #[test]
-    fn a_lone_star_takes_every_file_with_a_type() {
+    fn a_lone_star_takes_every_file_including_extensionless() {
         let r = CaptureRules {
             auto_types: "*".into(),
             ..CaptureRules::default()
         };
-        for name in ["model.gguf", "photo.jpg", "anything.xyz123"] {
+        for name in ["model.gguf", "photo.jpg", "anything.xyz123", "no_extension"] {
             assert_eq!(r.accepts("https://x.test/f", name, "Google Chrome"), Ok(()));
         }
-        assert!(!r.auto_type("no_extension"));
+        assert!(r.auto_type("no_extension"));
+        assert!(r.auto_type(""));
     }
 
     #[test]

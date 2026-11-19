@@ -11,15 +11,17 @@ use egui::{pos2, vec2};
 use crate::dialogs::{Outcome, window};
 use crate::winui::{self, ButtonKind, r};
 
-/// The repository: problem reports, releases, source, licences.
+/// The upstream repository: attribution, source, licences.
 pub const REPO: &str = "https://github.com/anefzaoui/misterdownloadmanager";
+/// This custom fork's repository: bug reports and OTA releases.
+pub const FORK_REPO: &str = "https://github.com/buiduchuy2010qn-prog/misterdownloadmanager";
 /// The creator's GitHub Sponsors page: Help → Support MDM, About's last line. The website, the
 /// extension's popup and the repository's Sponsor button (.github/FUNDING.yml) point there too.
 pub const SPONSORS: &str = "https://github.com/sponsors/anefzaoui";
-const LATEST: &str = "https://api.github.com/repos/buiduchuy2010qn-prog/misterdownloadmanager/releases/latest";
+const LATEST: &str =
+    "https://api.github.com/repos/buiduchuy2010qn-prog/misterdownloadmanager/releases/latest";
 /// Zero-rate-limit GitHub Releases CDN manifest written by release.yml (`ota.json`).
-const OTA_MANIFEST: &str =
-    "https://github.com/buiduchuy2010qn-prog/misterdownloadmanager/releases/latest/download/ota.json";
+const OTA_MANIFEST: &str = "https://github.com/buiduchuy2010qn-prog/misterdownloadmanager/releases/latest/download/ota.json";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const COMMIT: &str = env!("MDM_COMMIT");
 /// While MDM runs, the automatic check comes again this often (it also checks at every start).
@@ -101,7 +103,7 @@ pub fn report_problem() {
             let enc =
                 |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
             let url = report_fields().iter().fold(
-                format!("{REPO}/issues/new?template=bug.yml"),
+                format!("{FORK_REPO}/issues/new?template=bug.yml"),
                 |url, (k, v)| format!("{url}&{k}={}", enc(v)),
             );
             let _ = open::that_detached(url);

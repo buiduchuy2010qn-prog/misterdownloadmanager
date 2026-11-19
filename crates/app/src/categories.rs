@@ -556,10 +556,7 @@ mod tests {
     fn torrents_have_a_folder_but_no_file_types() {
         let _turn = registry();
         let downloads = Path::new(r"C:\d");
-        assert_eq!(
-            Category::Torrents.folder(downloads),
-            downloads.to_owned()
-        );
+        assert_eq!(Category::Torrents.folder(downloads), downloads.to_owned());
         assert_eq!(Category::of("ubuntu.iso.torrent"), Category::General);
         assert!(Category::all().contains(&Category::Torrents));
     }

@@ -42,6 +42,10 @@ function fakeApi({
   proxyAnswer = true,
   proxyOn = false,
   noticeReply,
+  blobRead = null,
+  searchItem = null,
+  tabList = [],
+  nativePort = false,
 }) {
   const raw = [];
   // Objects made inside the sandbox have its prototypes: compare plain copies.
@@ -67,8 +71,9 @@ function fakeApi({
     erase: async (q) => calls.push(["erase", q.id]),
     resume: async (id) => calls.push(["resume", id]),
     // `finished`: the download completed before the extension could stop it (a small file).
-    search: async ({ id }) => [{ id, state: finished ? "complete" : "interrupted", exists: true }],
+    search: async ({ id }) => [searchItem ? { id, ...searchItem } : { id, state: finished ? "complete" : "interrupted", exists: true }],
     removeFile: async (id) => calls.push(["removeFile", id]),
+    onChanged: event("downloadChanged"),
   };
   if (firefox) downloads.onCreated = event("created");
   else downloads.onDeterminingFilename = event("determining");
@@ -151,6 +156,37 @@ function fakeApi({
       onInstalled: event("installed"),
       onStartup: event("startup"),
       onMessage: event("message"),
+      ...(nativePort
+        ? {
+            connectNative: (name) => {
+              const msgListeners = [];
+              const discListeners = [];
+              calls.push(["connectNative", name]);
+              return {
+                onMessage: {
+                  addListener: (f) => msgListeners.push(f),
+                  removeListener: (f) => {
+                    const i = msgListeners.indexOf(f);
+                    if (i >= 0) msgListeners.splice(i, 1);
+                  },
+                },
+                onDisconnect: {
+                  addListener: (f) => discListeners.push(f),
+                  removeListener: (f) => {
+                    const i = discListeners.indexOf(f);
+                    if (i >= 0) discListeners.splice(i, 1);
+                  },
+                },
+                postMessage: (m) => {
+                  calls.push(["port", name, JSON.parse(JSON.stringify(m))]);
+                  const ans = m.blobStart ? { ok: true, blobId: "b-test-1" } : { ok: true };
+                  queueMicrotask(() => msgListeners.slice().forEach((f) => f(ans)));
+                },
+                disconnect: () => calls.push(["portDisconnect"]),
+              };
+            },
+          }
+        : {}),
       id: "ours",
       getURL: (p) => `chrome-extension://ours/${p}`,
     },
@@ -160,7 +196,7 @@ function fakeApi({
       onUpdated: event("tabUpdated"),
       get: async (id) => tabs[id] || { id, url: "about:blank", status: "complete" },
       remove: async (id) => calls.push(["closeTab", id]),
-      query: async () => [],
+      query: async () => tabList,
       create: async (t) => calls.push(["openTab", t.url]),
     },
     webRequest: {
@@ -171,7 +207,7 @@ function fakeApi({
       onAuthRequired: event("authRequired"),
     },
     scripting: {
-      executeScript: async ({ func }) => {
+      executeScript: async ({ func, args }) => {
         if (func && func.name === "playingAt") {
           if (playing === undefined) throw new Error("Cannot access contents of the page");
           return [{ result: playing }];
@@ -179,6 +215,10 @@ function fakeApi({
         if (func && func.name === "mediaElements") {
           if (!frames) throw new Error("Cannot access contents of the page");
           return Object.entries(frames).map(([frameId, result]) => ({ frameId: Number(frameId), result }));
+        }
+        if (func && func.name === "readBlobInPage") {
+          if (!blobRead) return [{ result: null }];
+          return [{ result: typeof blobRead === "function" ? blobRead(...(args || [])) : blobRead }];
         }
         return func ? [{ result: ["https://x/1.zip", "https://x/2.zip"] }] : [];
       },
@@ -240,6 +280,8 @@ function load(api, firefox, extra = {}) {
     URL,
     URLSearchParams,
     TextDecoder,
+    TextEncoder,
+    btoa,
     setTimeout,
     clearTimeout,
     Promise,
@@ -474,9 +516,9 @@ const ok = (what) => {
   };
   assert.ok(await keep({ id: 50, url: "https://x/alt.zip", filename: "alt.zip" }), "Alt");
   assert.ok(await keep({ id: 51, url: "https://dl.update.microsoft.com/kb.exe", filename: "kb.exe" }), "excluded site");
-  assert.ok(await keep({ id: 52, url: "blob:https://x/1234", filename: "a.zip" }), "blob:");
+  assert.ok(await keep({ id: 52, url: "file:///C:/local/a.zip", filename: "a.zip" }), "file:");
   assert.deepEqual(natives(calls), []);
-  // Alt and blob: are the user's and the browser's own: nothing to say. An excluded site is.
+  // Alt and file: are the user's and the browser's own: nothing to say. An excluded site is.
   assert.deepEqual(notices(calls), [{ why: "site", name: "kb.exe", site: "dl.update.microsoft.com" }]);
   const limited = fakeApi({ firefox: false, access: false });
   load(limited.api, false);
@@ -485,7 +527,112 @@ const ok = (what) => {
   await settle();
   assert.ok(suggested && natives(limited.calls).length === 0, "site access withdrawn");
   assert.deepEqual(notices(limited.calls).map((n) => n.why), ["site-access"]);
-  ok("Alt, excluded sites, blob: and withdrawn site access stay with the browser");
+  ok("Alt, excluded sites, file: and withdrawn site access stay with the browser");
+}
+
+// Catch-all `*`, Zalo Web `blob:https://...` direct transfer, `data:` capture, `blob:null` adoption,
+// and Chromium manifest without `proxy` permission (prevents VPN extensions disabling MDM).
+{
+  // 1) Chromium manifest has no required `proxy` permission.
+  const crManifest = JSON.parse(readFileSync(new URL("../../extension/manifest.json", import.meta.url), "utf8"));
+  assert.ok(!(crManifest.permissions || []).includes("proxy"), "Chromium manifest must not request proxy permission");
+
+  // 2) Catch-all `*` catches PDF, Word, PNG, TXT, extensionless files and enables all OPENED MIME types.
+  const all = fakeApi({ firefox: false, types: "* ZIP" });
+  load(all.api, false);
+  await settle();
+  const dnrRule = all.calls.filter((c) => c[0] === "dnr").pop()[1].addRules[0];
+  const mimes = dnrRule.condition.responseHeaders[0].values;
+  assert.ok(mimes.includes("application/pdf*"), "wildcard enables PDF inline capture");
+  assert.ok(mimes.includes("application/vnd.openxmlformats-officedocument.wordprocessingml.document*"), "wildcard enables DOCX inline capture");
+  assert.deepEqual(dnrRule.condition.excludedResponseHeaders, [{ header: "content-disposition", values: ["attachment*"] }]);
+  for (const [id, url, filename] of [
+    [901, "https://chatgpt.com/backend-api/estuary/content?id=file_1", "Cong_thuc.pdf"],
+    [902, "https://docs.test/file", "BaoCao.docx"],
+    [903, "https://cdn.test/dl", "no_extension"],
+    [904, "https://cdn.test/img.png", "img.png"],
+  ]) {
+    let sug = false;
+    all.listeners.determining({ id, url, filename }, () => (sug = true));
+    await settle();
+    assert.ok(!sug, `catch-all took ${filename}`);
+  }
+  assert.equal(natives(all.calls).length, 4);
+
+  // 3) Direct Zalo Web `blob:https://chat.zalo.me/...` transfer over native port cancels browser download.
+  const zalo = fakeApi({
+    firefox: false,
+    types: "*",
+    nativePort: true,
+    tabList: [{ id: 10, url: "https://chat.zalo.me/", active: true }],
+    blobRead: { b64: btoa("hello zalo docx"), size: 15 },
+  });
+  load(zalo.api, false);
+  await settle();
+  let zaloSuggested = false;
+  zalo.listeners.determining(
+    {
+      id: 910,
+      url: "blob:https://chat.zalo.me/eee013ce-e3f8-4497-bd3b-8db296c0b8a3",
+      filename: "Kịch Bản 11A8.docx",
+      referrer: "https://chat.zalo.me/",
+      mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      totalBytes: 15,
+    },
+    () => (zaloSuggested = true),
+  );
+  await settle();
+  assert.ok(!zaloSuggested, "Zalo blob taken directly without browser Save dialog");
+  const portMsgs = zalo.calls.filter((c) => c[0] === "port").map((c) => c[2]);
+  assert.equal(portMsgs[0].blobStart, true);
+  assert.equal(portMsgs[0].filename, "Kịch Bản 11A8.docx");
+  assert.equal(portMsgs[1].blobChunk, "b-test-1");
+  assert.equal(portMsgs[1].data, btoa("hello zalo docx"));
+  assert.equal(portMsgs[2].blobFinish, "b-test-1");
+  assert.ok(zalo.calls.some((c) => c[0] === "cancel" && c[1] === 910));
+
+  // 4) Direct `data:` download capture.
+  const dataDl = fakeApi({ firefox: false, types: "*", nativePort: true });
+  load(dataDl.api, false);
+  await settle();
+  let dataSuggested = false;
+  dataDl.listeners.determining(
+    { id: 911, url: `data:application/pdf;base64,${btoa("%PDF-1.7")}`, filename: "inline.pdf" },
+    () => (dataSuggested = true),
+  );
+  await settle();
+  assert.ok(!dataSuggested, "data: PDF taken directly");
+  assert.ok(dataDl.calls.some((c) => c[0] === "port" && c[2].blobFinish === "b-test-1"));
+
+  // 5) Fallback `blob:null/...` (Gemini sandboxed iframe): lets Chrome flush to disk, then adopts via importLocal.
+  const gemini = fakeApi({
+    firefox: false,
+    types: "*",
+    nativePort: true,
+    searchItem: {
+      state: "complete",
+      filename: "C:\\Users\\test\\Downloads\\gemini_video.mp4",
+      fileSize: 15360386,
+      mime: "video/mp4",
+    },
+  });
+  load(gemini.api, false);
+  await settle();
+  let gemSuggested = false;
+  gemini.listeners.determining(
+    { id: 912, url: "blob:null/b211a802", filename: "gemini_video.mp4", referrer: "https://gemini.google.com/app/1", mime: "video/mp4" },
+    () => (gemSuggested = true),
+  );
+  await settle();
+  assert.ok(gemSuggested, "blob:null falls back to browser flush");
+  gemini.listeners.downloadChanged({ id: 912, state: { current: "complete" } });
+  await settle();
+  const imported = gemini.calls.find((c) => c[0] === "native" && c[2].importLocal);
+  assert.ok(imported, "adopted into MDM after flush");
+  assert.equal(imported[2].importLocal, "C:\\Users\\test\\Downloads\\gemini_video.mp4");
+  assert.equal(imported[2].filename, "gemini_video.mp4");
+  assert.ok(gemini.calls.some((c) => c[0] === "erase" && c[1] === 912), "erased from browser shelf");
+  ok("catch-all *, Zalo blob:, data:, Gemini blob:null adoption, and no Chromium proxy conflict");
 }
 
 // Paused from the toolbar button: nothing is taken until it is on again.
@@ -1644,7 +1791,7 @@ const popupState = (listeners) =>
 // ("site-access"), and a popup text for each.
 {
   const rust = readFileSync(new URL("../../crates/ipc/src/capture.rs", import.meta.url), "utf8");
-  const body = /pub fn code\(self\)[\s\S]*?\n    \}\n/.exec(rust)[0];
+  const body = /pub fn code\(self\)[\s\S]*?\r?\n    \}\r?\n/.exec(rust)[0];
   const codes = [...body.matchAll(/=> "([a-z-]+)"/g)].map((m) => m[1]);
   assert.deepEqual(codes, ["integration-off", "browser", "file-type", "site", "address", "small"]);
   const en = JSON.parse(readFileSync(new URL("../../extension/_locales/en/messages.json", import.meta.url), "utf8"));
@@ -1860,7 +2007,7 @@ const ask = (listeners) => (m, sender) => new Promise((r) => listeners.message(m
 {
   const chrome = JSON.parse(readFileSync(new URL("../../extension/manifest.json", import.meta.url), "utf8"));
   const firefox = JSON.parse(readFileSync(new URL("../../extension/manifest.firefox.json", import.meta.url), "utf8"));
-  assert.ok((chrome.permissions || []).includes("proxy") && !(chrome.optional_permissions || []).includes("proxy"), "Chrome: proxy required");
+  assert.ok(!(chrome.permissions || []).includes("proxy") && !(chrome.optional_permissions || []).includes("proxy"), "Chrome: proxy omitted to avoid VPN extension conflicts");
   assert.ok(!(firefox.permissions || []).includes("proxy"), "Firefox: proxy not required");
   assert.deepEqual(firefox.optional_permissions, ["proxy"], "Firefox: proxy optional");
   const popup = readFileSync(new URL("../../extension/popup.js", import.meta.url), "utf8");

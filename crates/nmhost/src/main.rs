@@ -123,6 +123,19 @@ struct Message {
     /// `rules`) without asking about it: for MDM's log. Under its own key, with no `url`: an
     /// older host takes it for an address it can't download, and hands nothing over.
     declined: Option<Notice>,
+    /// Adopt a file the browser already finished saving (fallback for opaque `blob:null` or
+    /// oversized `blob:` downloads).
+    import_local: Option<String>,
+    /// Start a chunked `blob:` / `data:` upload directly into MDM without browser dialogs.
+    blob_start: bool,
+    /// Append base64 `data` to the staged blob identified by this token.
+    blob_chunk: Option<String>,
+    /// Finalize and hand the staged blob identified by this token to MDM.
+    blob_finish: Option<String>,
+    /// Abort and delete the staged blob identified by this token.
+    blob_cancel: Option<String>,
+    /// Base64 payload for `blob_chunk`.
+    data: Option<String>,
 }
 
 /// A download the extension left to the browser: why (a `Declined` code, or `site-access`:
@@ -173,6 +186,9 @@ struct Reply {
     /// extension to say (its popup).
     #[serde(skip_serializing_if = "Option::is_none")]
     declined: Option<&'static str>,
+    /// Token identifying an in-flight staged blob upload (`blobStart` → `blobChunk` → `blobFinish`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blob_id: Option<String>,
 }
 
 impl Reply {
@@ -306,6 +322,37 @@ fn answer(m: Message, rules: &mdm_ipc::capture::CaptureRules) -> Reply {
         None
     };
     if let Some(cmd) = panel_cmd {
+        return delivered(&cmd);
+    }
+    if let Some(local) = m
+        .import_local
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        if !m.explicit
+            && let Err(why) = verdict_blob(&m, rules)
+        {
+            let site_url = effective_site_url(&m);
+            let site = mdm_ipc::capture::host_of(&site_url);
+            log_left(browser, &site, &file_name_of(&m), why.reason(), m.private);
+            return Reply {
+                declined: Some(why.code()),
+                ..Reply::failed(
+                    "options",
+                    format!("left to the browser by Options ({why:?})"),
+                )
+            };
+        }
+        let path = std::path::Path::new(local);
+        if !path.is_file() {
+            return Reply::failed("refused", "imported file does not exist");
+        }
+        let size = m
+            .size
+            .filter(|s| *s > 0)
+            .or_else(|| std::fs::metadata(path).ok().map(|md| md.len()));
+        let cmd = import_command(&m, local.to_owned(), false, size);
         return delivered(&cmd);
     }
     if !downloadable(&m.url) {
@@ -465,6 +512,252 @@ fn verdict(
         Some(f) => rules.accepts(f, &name, browser),
         None => Ok(()),
     }
+}
+
+/// Effective `http(s)` origin/page URL for a `blob:` or `data:` download (used for site/address
+/// exclusion checks and for displaying the source URL in MDM).
+fn effective_site_url(m: &Message) -> String {
+    if downloadable(&m.url) {
+        return m.url.clone();
+    }
+    if let Some(rest) = m
+        .url
+        .strip_prefix("blob:")
+        .or_else(|| m.url.strip_prefix("BLOB:"))
+        && downloadable(rest)
+    {
+        return rest.to_owned();
+    }
+    if let Some(r) = m.referrer.as_deref()
+        && downloadable(r)
+    {
+        return r.to_owned();
+    }
+    String::new()
+}
+
+/// Whether Options allow taking a `blob:` / `data:` / browser-saved download.
+fn verdict_blob(
+    m: &Message,
+    rules: &mdm_ipc::capture::CaptureRules,
+) -> Result<(), mdm_ipc::capture::Declined> {
+    let browser = browser(m);
+    if let Some(off) = rules.capture_off(browser) {
+        return Err(off);
+    }
+    let name = file_name_of(m);
+    if !rules.auto_type(&name) {
+        return Err(mdm_ipc::capture::Declined::FileType);
+    }
+    let site_url = effective_site_url(m);
+    if !site_url.is_empty() {
+        let host = mdm_ipc::capture::host_of(&site_url);
+        if rules
+            .excluded_sites
+            .split_whitespace()
+            .any(|p| mdm_ipc::capture::host_matches(&host, p))
+        {
+            return Err(mdm_ipc::capture::Declined::Site);
+        }
+        if rules
+            .excluded_addresses
+            .iter()
+            .any(|p| mdm_ipc::capture::address_matches(p, &site_url))
+        {
+            return Err(mdm_ipc::capture::Declined::Address);
+        }
+    }
+    if rules.too_small(m.size) {
+        return Err(mdm_ipc::capture::Declined::Small);
+    }
+    Ok(())
+}
+
+fn import_command(
+    m: &Message,
+    import_path: String,
+    import_move: bool,
+    size: Option<u64>,
+) -> mdm_ipc::Command {
+    let some = |s: Option<&str>| s.filter(|s| !s.is_empty()).map(str::to_owned);
+    let name = m
+        .filename
+        .as_deref()
+        .and_then(|f| f.rsplit(['\\', '/']).next())
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned);
+    let site_url = effective_site_url(m);
+    let url = if !site_url.is_empty() {
+        Some(site_url)
+    } else {
+        Some("https://browser.local/".to_owned())
+    };
+    mdm_ipc::Command {
+        url,
+        name,
+        referer: some(m.referrer.as_deref()),
+        user_agent: m.user_agent.clone(),
+        size: size.filter(|s| *s > 0),
+        mime: some(m.mime.as_deref()),
+        private: m.private,
+        import_file: Some(import_path),
+        import_move,
+        ..Default::default()
+    }
+}
+
+const MAX_BLOB_BYTES: u64 = 512 * 1024 * 1024;
+static BLOB_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+struct BlobSession {
+    file: std::fs::File,
+    path: PathBuf,
+    written: u64,
+    meta: Message,
+}
+
+#[derive(Default)]
+struct BlobStore {
+    sessions: std::collections::HashMap<String, BlobSession>,
+}
+
+impl BlobStore {
+    fn start(&mut self, m: Message, rules: &mdm_ipc::capture::CaptureRules) -> Reply {
+        let browser = browser(&m);
+        if !m.explicit
+            && let Err(why) = verdict_blob(&m, rules)
+        {
+            let site_url = effective_site_url(&m);
+            let site = mdm_ipc::capture::host_of(&site_url);
+            log_left(browser, &site, &file_name_of(&m), why.reason(), m.private);
+            return Reply {
+                declined: Some(why.code()),
+                ..Reply::failed(
+                    "options",
+                    format!("left to the browser by Options ({why:?})"),
+                )
+            };
+        }
+        if m.size.is_some_and(|s| s > MAX_BLOB_BYTES) {
+            return Reply::failed("too-large", "blob exceeds 512 MB transfer limit");
+        }
+        let dir = std::env::temp_dir().join("mdm-blobs");
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return Reply::failed("refused", format!("cannot create blob staging dir: {e}"));
+        }
+        let seq = BLOB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let id = format!("b-{}-{seq}-{stamp:x}", std::process::id());
+        let path = dir.join(format!("{id}.part"));
+        let file = match std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(f) => f,
+            Err(e) => return Reply::failed("refused", format!("cannot open staging file: {e}")),
+        };
+        self.sessions.insert(
+            id.clone(),
+            BlobSession {
+                file,
+                path,
+                written: 0,
+                meta: m,
+            },
+        );
+        Reply {
+            ok: true,
+            blob_id: Some(id),
+            ..Default::default()
+        }
+    }
+
+    fn chunk(&mut self, id: &str, data: &str) -> Reply {
+        use base64::Engine;
+        let Some(sess) = self.sessions.get_mut(id) else {
+            return Reply::failed("refused", "unknown blob session");
+        };
+        let bytes = match base64::engine::general_purpose::STANDARD.decode(data) {
+            Ok(b) => b,
+            Err(e) => return Reply::failed("refused", format!("invalid base64 chunk: {e}")),
+        };
+        let next_size = sess.written.saturating_add(bytes.len() as u64);
+        if next_size > MAX_BLOB_BYTES {
+            self.cancel(id);
+            return Reply::failed("too-large", "blob exceeds 512 MB transfer limit");
+        }
+        if let Err(e) = sess.file.write_all(&bytes) {
+            self.cancel(id);
+            return Reply::failed("refused", format!("blob write failed: {e}"));
+        }
+        sess.written = next_size;
+        Reply::done()
+    }
+
+    fn take_finished(&mut self, id: &str) -> Result<(mdm_ipc::Command, PathBuf), Reply> {
+        let Some(mut sess) = self.sessions.remove(id) else {
+            return Err(Reply::failed("refused", "unknown blob session"));
+        };
+        if let Err(e) = sess.file.flush() {
+            let _ = std::fs::remove_file(&sess.path);
+            return Err(Reply::failed("refused", format!("blob flush failed: {e}")));
+        }
+        // Close handle before handing path to MDM so Windows rename succeeds immediately.
+        drop(sess.file);
+        let size = Some(sess.written);
+        let path_str = sess.path.to_string_lossy().into_owned();
+        let cmd = import_command(&sess.meta, path_str, true, size);
+        Ok((cmd, sess.path))
+    }
+
+    fn cancel(&mut self, id: &str) -> Reply {
+        if let Some(sess) = self.sessions.remove(id) {
+            drop(sess.file);
+            let _ = std::fs::remove_file(&sess.path);
+        }
+        Reply::done()
+    }
+}
+
+impl Drop for BlobStore {
+    fn drop(&mut self) {
+        for (_, sess) in self.sessions.drain() {
+            drop(sess.file);
+            let _ = std::fs::remove_file(&sess.path);
+        }
+    }
+}
+
+fn answer_session(
+    m: Message,
+    rules: &mdm_ipc::capture::CaptureRules,
+    blobs: &mut BlobStore,
+) -> Reply {
+    if m.blob_start {
+        return blobs.start(m, rules);
+    }
+    if let Some(id) = m.blob_chunk.as_deref() {
+        return blobs.chunk(id, m.data.as_deref().unwrap_or_default());
+    }
+    if let Some(id) = m.blob_finish.as_deref() {
+        return match blobs.take_finished(id) {
+            Ok((cmd, staging_path)) => {
+                let reply = delivered(&cmd);
+                if !reply.ok {
+                    let _ = std::fs::remove_file(staging_path);
+                }
+                reply
+            }
+            Err(reply) => reply,
+        };
+    }
+    if let Some(id) = m.blob_cancel.as_deref() {
+        return blobs.cancel(id);
+    }
+    answer(m, rules)
 }
 
 /// Read one native message; None at end of input.
@@ -693,6 +986,7 @@ fn exe_dir() -> Result<PathBuf, String> {
 fn serve() -> io::Result<()> {
     let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout().lock();
+    let mut blobs = BlobStore::default();
     while let Some(raw) = read_message(&mut stdin)? {
         let raw = match raw {
             Ok(raw) => raw,
@@ -710,7 +1004,7 @@ fn serve() -> io::Result<()> {
             Ok(m) => {
                 // This browser has the extension: the app stops offering it (extension.rs).
                 mdm_ipc::extension::mark_seen(browser(&m), m.v.as_deref().unwrap_or_default());
-                answer(m, &mdm_ipc::capture::CaptureRules::load())
+                answer_session(m, &mdm_ipc::capture::CaptureRules::load(), &mut blobs)
             }
             Err(e) => Reply::failed("refused", e.to_string()),
         };
@@ -1143,8 +1437,18 @@ mod tests {
             user_agent: Some(ua.into()),
             ..Default::default()
         };
-        // Not a listed type: left to the browser, nothing delivered.
-        let r = answer(msg("https://example.com/page.html", "page.html"), &rules);
+        // Default catch-all (*) accepts any type, including extensionless names.
+        assert!(verdict(&msg("https://example.com/page.html", "page.html"), &rules).is_ok());
+        assert!(verdict(&msg("https://example.com/dl", "noext"), &rules).is_ok());
+        // Not a listed type when restricted: left to the browser, nothing delivered.
+        let restricted = mdm_ipc::capture::CaptureRules {
+            auto_types: "ZIP EXE".into(),
+            ..Default::default()
+        };
+        let r = answer(
+            msg("https://example.com/page.html", "page.html"),
+            &restricted,
+        );
         assert!(!r.ok && r.error.unwrap().contains("FileType"));
         // An excluded site.
         let r = answer(
@@ -1573,5 +1877,41 @@ mod tests {
                 .proxy_pac
                 .is_none()
         );
+    }
+
+    #[test]
+    fn blob_staging_writes_chunks_and_cleans_up_on_cancel() {
+        use base64::Engine;
+        let rules = mdm_ipc::capture::CaptureRules::default();
+        let mut store = BlobStore::default();
+        let start: Message = serde_json::from_str(
+            r#"{"blobStart":true,"url":"blob:https://chat.zalo.me/eee013ce","referrer":"https://chat.zalo.me/","filename":"Kịch Bản 11A8.docx","mime":"application/vnd.openxmlformats-officedocument.wordprocessingml.document","size":11,"userAgent":"Mozilla/5.0 Chrome/141.0.0.0 Safari/537.36"}"#,
+        )
+        .unwrap();
+        let r = store.start(start, &rules);
+        assert!(r.ok, "blobStart accepted: {:?}", r.error);
+        let id = r.blob_id.expect("blobId returned");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"hello zalo!");
+        assert!(store.chunk(&id, &b64).ok);
+        let (cmd, staging) = store.take_finished(&id).expect("finished");
+        assert!(cmd.import_move);
+        assert_eq!(cmd.name.as_deref(), Some("Kịch Bản 11A8.docx"));
+        assert_eq!(cmd.url.as_deref(), Some("https://chat.zalo.me/eee013ce"));
+        assert_eq!(cmd.size, Some(11));
+        assert_eq!(std::fs::read(&staging).unwrap(), b"hello zalo!");
+        let _ = std::fs::remove_file(&staging);
+
+        // Cancelled session deletes its staging file cleanly.
+        let m2: Message = serde_json::from_str(
+            r#"{"blobStart":true,"url":"blob:null/abc","filename":"video.mp4","userAgent":"Chrome/141"}"#,
+        )
+        .unwrap();
+        let r2 = store.start(m2, &rules);
+        assert!(r2.ok);
+        let id2 = r2.blob_id.unwrap();
+        let p2 = store.sessions.get(&id2).unwrap().path.clone();
+        assert!(p2.exists());
+        assert!(store.cancel(&id2).ok);
+        assert!(!p2.exists());
     }
 }

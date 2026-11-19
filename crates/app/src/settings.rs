@@ -1149,7 +1149,10 @@ mod tests {
         let s = Settings::default();
         let listed = |name| mdm_ipc::capture::type_listed(&s.auto_types, name);
         assert!(listed("setup.EXE") && listed("a.r01") && listed("x.zip"));
-        assert!(!listed("page.html") && !listed("noext"));
+        assert!(listed("page.html") && listed("noext"));
+        let restricted = |name| mdm_ipc::capture::type_listed("EXE ZIP R0*", name);
+        assert!(restricted("setup.EXE") && restricted("a.r01"));
+        assert!(!restricted("page.html") && !restricted("noext"));
     }
 
     #[test]

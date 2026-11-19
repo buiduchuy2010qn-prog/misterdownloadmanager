@@ -82,11 +82,12 @@
   const note = (e) => {
     if (!e.isTrusted || !(e.target instanceof Element)) return;
     const a = e.target.closest("a[href]");
-    if (!a || !/^https?:/i.test(a.href)) return;
+    if (!a || !/^(https?|blob|data):/i.test(a.href)) return;
     if (e.altKey) {
       tell({ type: "bypass", url: a.href });
       return;
     }
+    if (!/^https?:/i.test(a.href)) return;
     // Safari: a plain click (or Cmd/Shift: a link opened elsewhere is held the same).
     if (SAFARI && e.type === "click" && e.button === 0 && patterns.length) {
       const type = typeOf(a);

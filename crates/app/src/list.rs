@@ -386,11 +386,7 @@ fn layout_for_width(st: &ListState, avail_w: f32, modern: bool) -> (Vec<usize>, 
             (ADDED, 145.0),
             (SOURCE, 58.0),
         ] {
-            if shown.contains(&col)
-                && dragging_col != Some(col)
-                && w[col] > floor_w
-                && trim > 0.0
-            {
+            if shown.contains(&col) && dragging_col != Some(col) && w[col] > floor_w && trim > 0.0 {
                 let cut = (w[col] - floor_w).min(trim);
                 w[col] -= cut;
                 trim -= cut;
@@ -1108,19 +1104,12 @@ pub fn show(
                     let has_bar = matches!(row.status_group, "Downloading" | "Stopped" | "Error")
                         && (row.progress.is_some() || row.status_group == "Downloading");
                     let name_y = if has_bar { top + 20.0 } else { text_y };
-                    let name_ink = if sel {
-                        winui::SELECTION_TEXT()
-                    } else {
-                        TEXT()
-                    };
+                    let name_ink = if sel { winui::SELECTION_TEXT() } else { TEXT() };
                     text_font(&clip, font.clone(), tx, name_y, &s, name_ink);
                     if has_bar && room > 24.0 {
-                        let track = Rect::from_min_size(pos2(tx, top + 29.0), egui::vec2(room, 6.0));
-                        clip.rect_filled(
-                            screen(track),
-                            3.0,
-                            crate::theme::colors().meter_track,
-                        );
+                        let track =
+                            Rect::from_min_size(pos2(tx, top + 29.0), egui::vec2(room, 6.0));
+                        clip.rect_filled(screen(track), 3.0, crate::theme::colors().meter_track);
                         let bar_color = match row.status_group {
                             "Downloading" => crate::theme::colors().progress_bar,
                             "Stopped" => {
@@ -1133,12 +1122,26 @@ pub fn show(
                             "Error" => winui::ERROR(),
                             _ => SORT_ARROW(),
                         };
-                        let pct = row.progress.unwrap_or(0.18).clamp(0.0, 1.0);
-                        let fw = (room * pct).round().max(if pct > 0.0 { 4.0 } else { 0.0 });
-                        if fw > 0.0 {
+                        if let Some(pct) = row.progress {
+                            let pct = pct.clamp(0.0, 1.0);
+                            let fw = (room * pct).round().max(if pct > 0.0 { 4.0 } else { 0.0 });
+                            if fw > 0.0 {
+                                let fill_rc =
+                                    Rect::from_min_size(pos2(tx, top + 29.0), egui::vec2(fw, 6.0));
+                                clip.rect_filled(screen(fill_rc), 3.0, bar_color);
+                            }
+                        } else if row.status_group == "Downloading" {
+                            let phase = (ui.ctx().input(|i| i.time) * 0.65).fract() as f32;
+                            let seg_w = (room * 0.28).clamp(24.0, 120.0).min(room);
+                            let sx = tx - seg_w + (room + seg_w) * phase;
                             let fill_rc =
-                                Rect::from_min_size(pos2(tx, top + 29.0), egui::vec2(fw, 6.0));
-                            clip.rect_filled(screen(fill_rc), 3.0, bar_color);
+                                Rect::from_min_size(pos2(sx, top + 29.0), egui::vec2(seg_w, 6.0))
+                                    .intersect(track);
+                            if fill_rc.width() > 0.5 {
+                                clip.rect_filled(screen(fill_rc), 3.0, bar_color);
+                            }
+                            ui.ctx()
+                                .request_repaint_after(std::time::Duration::from_millis(33));
                         }
                     }
                     continue;
@@ -1171,13 +1174,7 @@ pub fn show(
                     );
                 }
                 if *c == SOURCE {
-                    let cut = chip(
-                        &clip,
-                        &font,
-                        (*x0, *x1),
-                        top,
-                        &row.cells[*c],
-                    );
+                    let cut = chip(&clip, &font, (*x0, *x1), top, &row.cells[*c]);
                     if cut && hover_pt.is_some_and(|h| cell.contains(h)) {
                         cut_under_pointer = Some(crate::i18n::t(&row.cells[*c]).to_owned());
                     }
@@ -1215,20 +1212,12 @@ pub fn show(
                         pos2(x0 + 4.0, top + row_h() - 4.0),
                         egui::vec2(bar_w, 2.0),
                     );
-                    clip.rect_filled(
-                        screen(track),
-                        1.0,
-                        crate::theme::colors().meter_track,
-                    );
+                    clip.rect_filled(screen(track), 1.0, crate::theme::colors().meter_track);
                     let fill_rect = Rect::from_min_size(
                         pos2(x0 + 4.0, top + row_h() - 4.0),
                         egui::vec2((bar_w * pct).round(), 2.0),
                     );
-                    clip.rect_filled(
-                        screen(fill_rect),
-                        1.0,
-                        crate::theme::colors().progress_bar,
-                    );
+                    clip.rect_filled(screen(fill_rect), 1.0, crate::theme::colors().progress_bar);
                 }
                 let failed = row.status_group == "Error" && (*c == 3 || *c == 7);
                 let live_rate = modern && *c == 5 && row.status_group == "Downloading";
@@ -1573,7 +1562,10 @@ fn action_rect(cols: &[(usize, f32, f32)], top: f32, modern: bool) -> Option<Rec
         return None;
     }
     let cy = top + (row_h() / 2.0).floor();
-    Some(Rect::from_center_size(pos2(*x0 + 21.0, cy), egui::vec2(26.0, 26.0)))
+    Some(Rect::from_center_size(
+        pos2(*x0 + 21.0, cy),
+        egui::vec2(26.0, 26.0),
+    ))
 }
 
 fn action_tooltip(row: &Row) -> String {
@@ -1729,8 +1721,14 @@ fn paint_modern_status(
     match row.status_group {
         "Complete" => {
             let st = egui::Stroke::new(1.6, fg);
-            p.line_segment([pos2(mc.x - 3.5, mc.y + 0.2), pos2(mc.x - 1.0, mc.y + 2.8)], st);
-            p.line_segment([pos2(mc.x - 1.0, mc.y + 2.8), pos2(mc.x + 3.8, mc.y - 2.6)], st);
+            p.line_segment(
+                [pos2(mc.x - 3.5, mc.y + 0.2), pos2(mc.x - 1.0, mc.y + 2.8)],
+                st,
+            );
+            p.line_segment(
+                [pos2(mc.x - 1.0, mc.y + 2.8), pos2(mc.x + 3.8, mc.y - 2.6)],
+                st,
+            );
         }
         "Stopped" => {
             let b1 = Rect::from_center_size(pos2(mc.x - 1.8, mc.y), egui::vec2(1.8, 7.0));

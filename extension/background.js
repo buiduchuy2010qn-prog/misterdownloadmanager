@@ -128,7 +128,7 @@ async function remoteSend(target, message) {
 // The file types the app takes by default (mdm_ipc::capture::DEFAULT_AUTO_TYPES; a test keeps
 // them the same): what is caught for another MDM when this computer has none to ask.
 const DEFAULT_TYPES =
-  "00* 3DM 3DS 3GP 3MF 7Z AAB AAC ABC ACE AFDESIGN AFPHOTO AI AIF AIFF APE APK APKM APKS APPIMAGE APPX APPXBUNDLE ARJ ARROW ARW ASF AU AVI AVRO AZW AZW3 BAK BAM BIN BLEND BZ BZ2 C4D CAB CAF CBR CBZ CCD CHD CKPT CPIO CR2 CR3 CRAM CSO DAE DAT DCM DDS DEB DFF DIVX DJVU DMG DNG DOC DOCX DSF DWG DXF EPS EPUB EXE EXR F3D F4V FASTA FASTQ FB2 FBX FEATHER FIG FITS FLAC FLATPAK FQ GCODE GCZ GEM GGML GGUF GLB GLTF GPKG GRIB GRIB2 GZ GZIP H5 HDF5 HDR IGES IGS IMG INDD IPA ISO ISZ JAR JOBLIB JSONL KERAS KRA LAS LAZ LLAMAFILE LWO LZ LZ4 LZH LZMA M2T M2TS M2V M4A M4B M4V MA MAT MAX MB MBTILES MDF MDS MID MIDI MKA MKV MLMODEL MOBI MOV MP3 MP4 MPA MPE MPEG MPG MSI MSIX MSIXBUNDLE MSP MSU MTS MXF NC NDJSON NEF NEMO NII NPY NPZ NRG NSP NSZ NUPKG OBJ ODP ODS ODT OGG OGM OGV ONNX OPUS ORC ORF OTF OVA OVF PAK PARQUET PB PBF PDF PICKLE PK3 PK4 PKG PKL PLJ PLY POTX PPS PPSX PPT PPTX PSB PSD PT PTH QCOW QCOW2 QT R0* R1* R2* R3* R4* R5* R6* R7* R8* R9* RA RAF RAR RDS RM RMVB RPM RTF RUN RVZ RW2 SAFETENSORS SEA SF2 SFZ SHP SIT SITX SKETCH SKP SLDASM SLDPRT SNAP SQLITE SQLITE3 STEP STL STP TAR TBZ TBZ2 TFLITE TGA TGZ TIF TIFF TLZ TORRENT TTA TTC TTF TXZ TZST UNITYPACKAGE USD USDA USDC USDZ VDB VDI VHD VHDX VMDK VOB VPK VSIX WAV WBFS WEBM WHL WIM WMA WMV WRL WTV WUA WV X3D XAPK XCF XCI XLS XLSB XLSM XLSX XZ Z Z0* ZIP ZIPX ZPR ZST ZTL";
+  "* 00* 3DM 3DS 3GP 3MF 7Z AAB AAC ABC ACE AFDESIGN AFPHOTO AI AIF AIFF APE APK APKM APKS APPIMAGE APPX APPXBUNDLE ARJ ARROW ARW ASF AU AVI AVRO AZW AZW3 BAK BAM BIN BLEND BZ BZ2 C4D CAB CAF CBR CBZ CCD CHD CKPT CPIO CR2 CR3 CRAM CSO DAE DAT DCM DDS DEB DFF DIVX DJVU DMG DNG DOC DOCX DSF DWG DXF EPS EPUB EXE EXR F3D F4V FASTA FASTQ FB2 FBX FEATHER FIG FITS FLAC FLATPAK FQ GCODE GCZ GEM GGML GGUF GLB GLTF GPKG GRIB GRIB2 GZ GZIP H5 HDF5 HDR IGES IGS IMG INDD IPA ISO ISZ JAR JOBLIB JSONL KERAS KRA LAS LAZ LLAMAFILE LWO LZ LZ4 LZH LZMA M2T M2TS M2V M4A M4B M4V MA MAT MAX MB MBTILES MDF MDS MID MIDI MKA MKV MLMODEL MOBI MOV MP3 MP4 MPA MPE MPEG MPG MSI MSIX MSIXBUNDLE MSP MSU MTS MXF NC NDJSON NEF NEMO NII NPY NPZ NRG NSP NSZ NUPKG OBJ ODP ODS ODT OGG OGM OGV ONNX OPUS ORC ORF OTF OVA OVF PAK PARQUET PB PBF PDF PICKLE PK3 PK4 PKG PKL PLJ PLY POTX PPS PPSX PPT PPTX PSB PSD PT PTH QCOW QCOW2 QT R0* R1* R2* R3* R4* R5* R6* R7* R8* R9* RA RAF RAR RDS RM RMVB RPM RTF RUN RVZ RW2 SAFETENSORS SEA SF2 SFZ SHP SIT SITX SKETCH SKP SLDASM SLDPRT SNAP SQLITE SQLITE3 STEP STL STP TAR TBZ TBZ2 TFLITE TGA TGZ TIF TIFF TLZ TORRENT TTA TTC TTF TXZ TZST UNITYPACKAGE USD USDA USDC USDZ VDB VDI VHD VHDX VMDK VOB VPK VSIX WAV WBFS WEBM WHL WIM WMA WMV WRL WTV WUA WV X3D XAPK XCF XCI XLS XLSB XLSM XLSX XZ Z Z0* ZIP ZIPX ZPR ZST ZTL";
 
 // Pair with the MDM at `address` with a code it shows; {ok} or {ok: false, why, left}.
 async function remotePair(address, code) {
@@ -264,6 +264,12 @@ async function currentRules() {
   if (!r || (why && why !== "update-app")) return refreshRules();
   if (Date.now() - r.at > 60000) refreshRules();
   return r;
+}
+
+function hasWildcardType(list) {
+  return String(list || "")
+    .split(/\s+/)
+    .includes("*");
 }
 
 function typePatterns(list) {
@@ -1277,31 +1283,279 @@ async function handOff(d) {
   return native(message);
 }
 
-// The file name to offer the app the download under (`{name}`), or why Options leave it to
-// the browser (`{left, name}`), or null: the browser keeps it and there is nothing to say (not a
-// web address, paused, Alt held, a form that can't be posted again, MDM not reached).
+// Extract the http(s) origin for a `blob:` or `data:` download (e.g. Zalo Web's
+// `blob:https://chat.zalo.me/...`) so site exclusion rules and tab lookup work.
+function blobOrigin(url, referrer) {
+  if (/^blob:https?:/i.test(url)) {
+    try {
+      return new URL(url.slice(5)).origin;
+    } catch {
+      return "";
+    }
+  }
+  if (referrer && /^https?:/i.test(referrer)) {
+    try {
+      return new URL(referrer).origin;
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+// The file name to offer the app the download under (`{name, kind, origin}`), or why Options
+// leave it to the browser (`{left, name}`), or null: the browser keeps it and there is nothing to
+// say (unsupported scheme, paused, Alt held, a form that can't be posted again, MDM not reached).
 async function candidate(item, url) {
-  if (!/^https?:/i.test(url)) return null; // blob:, data:, file: stay the browser's
+  const isHttp = /^https?:/i.test(url);
+  const isBlob = /^blob:/i.test(url);
+  const isData = /^data:/i.test(url);
+  if (!isHttp && !isBlob && !isData) return null; // file:, chrome:, etc. stay the browser's
   const { paused } = await ext.storage.local.get({ paused: false });
   if (paused) return null;
   forget(bypass, 10000);
   if (bypass.has(item.url) || bypass.has(url)) return null;
-  const first = firstUrl(item);
-  if (bypass.has(first) || postOf(first) === null) return null; // Alt; a form not to post again
+  const first = isHttp ? firstUrl(item) : url;
+  if (bypass.has(first) || (isHttp && postOf(first) === null)) return null; // Alt; a form not to post again
   const r = await currentRules();
   if (!r) return null;
-  const name = (item.filename || "").split(/[\\/]/).pop() || url.split(/[?#]/)[0].split("/").pop() || "";
+  const name =
+    (item.filename || "").split(/[\\/]/).pop() ||
+    (isHttp ? url.split(/[?#]/)[0].split("/").pop() : "") ||
+    "";
   const left = (why) => ({ left: why, name });
   if (!r.capture) return left(r.captureOff || "browser");
-  const by = excludedBy(r, first) || excludedBy(r, url);
-  if (by) return left(by);
+  const origin = isHttp ? "" : blobOrigin(url, item.referrer);
+  if (isHttp) {
+    const by = excludedBy(r, first) || excludedBy(r, url);
+    if (by) return left(by);
+  } else {
+    const siteUrl = origin || item.referrer || "";
+    if (siteUrl) {
+      const by = excludedBy(r, siteUrl);
+      if (by) return left(by);
+    }
+  }
+  const catchAll = hasWildcardType(r.types);
   const type = extensionOf(name);
-  if (!type || !typePatterns(r.types).some((p) => p.test(type))) return left("file-type");
+  if (!catchAll && (!type || !typePatterns(r.types).some((p) => p.test(type)))) return left("file-type");
   // Smaller than Options' minimum (when the browser knows the size already).
   const size = item.totalBytes > 0 ? item.totalBytes : item.fileSize;
   if (r.minKb > 0 && size > 0 && size < r.minKb * 1024) return left("small");
-  if (!(await siteAccess(first))) return left("site-access");
-  return { name };
+  if (isHttp && !(await siteAccess(first))) return left("site-access");
+  return { name, kind: isHttp ? "http" : isBlob ? "blob" : "data", origin };
+}
+
+// ---- blob: and data: downloads (Zalo Web, ChatGPT, Gemini, Canva, Mega…) --------------------
+
+// Maximum blob size transferred directly from the page before falling back to Chromium's instant
+// RAM-to-disk flush + MDM adoption (25 MB covers almost all PDF/Word/Office/image attachments).
+const BLOB_DIRECT_MAX = 25 * 1024 * 1024;
+// 524,288 base64 chars = 393,216 raw bytes per native message (safely under Chrome's 1 MB limit).
+const BLOB_B64_CHUNK = 524288;
+// Fallback queue for `blob:null` (sandboxed iframes like Gemini) or blobs > BLOB_DIRECT_MAX:
+// Chromium flushes the RAM blob in milliseconds, then `downloads.onChanged` hands it to MDM.
+const pendingBlobImports = new Map();
+
+function bytesToBase64(bytes) {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+}
+
+function readDataUrlBase64(url) {
+  const comma = url.indexOf(",");
+  if (comma < 0) return null;
+  const meta = url.slice(5, comma);
+  const body = url.slice(comma + 1);
+  if (/;base64$/i.test(meta) || /;base64;/i.test(meta)) {
+    const clean = body.replace(/\s+/g, "");
+    const size = Math.floor((clean.length * 3) / 4);
+    if (size > BLOB_DIRECT_MAX) return null;
+    return { b64: clean, size };
+  }
+  try {
+    const decoded = decodeURIComponent(body);
+    const bytes = new TextEncoder().encode(decoded);
+    if (bytes.length > BLOB_DIRECT_MAX) return null;
+    return { b64: bytesToBase64(bytes), size: bytes.length };
+  } catch {
+    return null;
+  }
+}
+
+// Injected into the originating tab/frames to read a same-origin `blob:https://...` URL.
+async function readBlobInPage(blobUrl, maxBytes) {
+  try {
+    const r = await fetch(blobUrl);
+    if (!r.ok) return null;
+    const b = await r.blob();
+    if (b.size > maxBytes) return { tooLarge: true, size: b.size };
+    const buf = new Uint8Array(await b.arrayBuffer());
+    let bin = "";
+    for (let i = 0; i < buf.length; i += 0x8000) {
+      bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    }
+    return { b64: btoa(bin), size: buf.length };
+  } catch {
+    return null;
+  }
+}
+
+async function readTabBlobBase64(blobUrl, origin, referrer) {
+  if (!origin || !/^https?:/i.test(origin) || !ext.tabs?.query || !ext.scripting?.executeScript) return null;
+  let tabs = [];
+  try {
+    tabs = (await ext.tabs.query({ url: `${origin}/*` })) || [];
+  } catch {
+    return null;
+  }
+  // Prefer the exact referring tab or active tab first so the right tab responds immediately.
+  tabs.sort((a, b) => {
+    const score = (tab) => (referrer && tab.url === referrer ? 2 : 0) + (tab.active ? 1 : 0);
+    return score(b) - score(a);
+  });
+  for (const tab of tabs.slice(0, 6)) {
+    try {
+      const results = await withTimeout(
+        ext.scripting.executeScript({
+          target: { tabId: tab.id, allFrames: true },
+          func: readBlobInPage,
+          args: [blobUrl, BLOB_DIRECT_MAX],
+        }),
+        8000,
+      );
+      for (const frame of results || []) {
+        const res = frame && frame.result;
+        if (!res) continue;
+        if (res.tooLarge) return null;
+        if (typeof res.b64 === "string") return res;
+      }
+    } catch {
+      // Tab closed or restricted; try next candidate tab.
+    }
+  }
+  return null;
+}
+
+// Stream base64 payload over a single persistent native messaging port (`blobStart` → `blobChunk` → `blobFinish`).
+async function streamBlobToHost(b64, meta) {
+  if (!ext.runtime || typeof ext.runtime.connectNative !== "function") return false;
+  const app = await APP_NAME;
+  const brands = app ? [...BRANDS, app] : BRANDS;
+  const base = { userAgent: navigator.userAgent, brands, v: VERSION };
+  let port;
+  try {
+    port = ext.runtime.connectNative(HOST);
+  } catch {
+    return false;
+  }
+  const askPort = (msg, ms = 20000) =>
+    new Promise((resolve, reject) => {
+      let timer;
+      const done = (fn, val) => {
+        clearTimeout(timer);
+        port.onMessage.removeListener(onMsg);
+        port.onDisconnect.removeListener(onDisc);
+        fn(val);
+      };
+      const onMsg = (reply) => done(resolve, reply || {});
+      const onDisc = () => done(reject, new Error((ext.runtime.lastError && ext.runtime.lastError.message) || "disconnected"));
+      timer = setTimeout(() => done(reject, new Error("no answer")), ms);
+      port.onMessage.addListener(onMsg);
+      port.onDisconnect.addListener(onDisc);
+      try {
+        port.postMessage({ ...msg, ...base });
+      } catch (e) {
+        done(reject, e);
+      }
+    });
+  let blobId = "";
+  try {
+    const started = await askPort({ blobStart: true, ...meta });
+    if (!started.ok || !started.blobId) return false;
+    blobId = started.blobId;
+    for (let i = 0; i < b64.length; i += BLOB_B64_CHUNK) {
+      const part = await askPort({ blobChunk: blobId, data: b64.slice(i, i + BLOB_B64_CHUNK) });
+      if (!part.ok) throw new Error(part.error || "chunk failed");
+    }
+    const finished = await askPort({ blobFinish: blobId }, HOST_WAIT);
+    if (finished.ok) {
+      await ext.storage.local.remove("declined").catch(() => {});
+      return true;
+    }
+    return false;
+  } catch {
+    if (blobId) {
+      try {
+        port.postMessage({ blobCancel: blobId, ...base });
+      } catch {
+        // Port already closed; nmhost Drop cleans up the staging file.
+      }
+    }
+    return false;
+  } finally {
+    try {
+      port.disconnect();
+    } catch {
+      // Already disconnected.
+    }
+  }
+}
+
+async function offerBlobOrData(item, url, c) {
+  if (await remoteTarget()) return false;
+  const payload = c.kind === "data" ? readDataUrlBase64(url) : await readTabBlobBase64(url, c.origin, item.referrer);
+  if (!payload || typeof payload.b64 !== "string") return false;
+  const meta = {
+    url,
+    referrer: item.referrer || c.origin || "",
+    filename: c.name || "",
+    size: payload.size,
+    ...(item.mime ? { mime: item.mime } : {}),
+    ...(item.incognito ? { private: true } : {}),
+  };
+  return streamBlobToHost(payload.b64, meta);
+}
+
+function queueBlobAdopt(item, url, c) {
+  forget(pendingBlobImports, 120000);
+  pendingBlobImports.set(item.id, {
+    url: item.referrer || c.origin || url,
+    filename: c.name || "",
+    mime: item.mime || "",
+    incognito: Boolean(item.incognito),
+    at: Date.now(),
+  });
+}
+
+async function adoptCompletedBlob(id, meta) {
+  if (await remoteTarget()) return;
+  let d;
+  try {
+    const list = await ext.downloads.search({ id });
+    d = list && list[0];
+  } catch {
+    return;
+  }
+  if (!d || d.state !== "complete" || !d.filename) return;
+  const baseName = meta.filename || d.filename.split(/[\\/]/).pop() || "";
+  const size = d.fileSize > 0 ? d.fileSize : d.totalBytes > 0 ? d.totalBytes : 0;
+  const reply = await native({
+    importLocal: d.filename,
+    url: meta.url,
+    referrer: meta.url,
+    filename: baseName,
+    ...(size > 0 ? { size } : {}),
+    ...(meta.mime || d.mime ? { mime: meta.mime || d.mime } : {}),
+    ...(meta.incognito ? { private: true } : {}),
+  });
+  if (reply.ok) {
+    await ext.storage.local.remove("declined").catch(() => {});
+    ext.downloads.erase({ id }).catch(() => {});
+  }
 }
 
 // Why it stays with the browser, said (the popup, MDM's log).
@@ -1420,7 +1674,16 @@ if (SAFARI) {
     const url = item.finalUrl || item.url;
     candidate(item, url)
       .then(async (c) => {
-        const taken = Boolean(c && c.name && !c.left) && (await offer(item, url, c.name));
+        if (c && !c.left && c.kind !== "http") {
+          const taken = await offerBlobOrData(item, url, c).catch(() => false);
+          if (taken) return drop(item);
+          // Fallback (e.g. opaque `blob:null` from Gemini or >25 MB blob): let Chromium flush
+          // RAM to disk in milliseconds, then adopt the saved file straight into MDM.
+          queueBlobAdopt(item, url, c);
+          suggest();
+          return;
+        }
+        const taken = Boolean(c && !c.left) && (await offer(item, url, c.name));
         if (taken) return drop(item);
         // The browser goes on first; why is said after.
         suggest();
@@ -1442,6 +1705,15 @@ if (SAFARI) {
     if (decided.has(url) || decided.has(firstUrl(item))) return;
     const c = await candidate(item, url).catch(() => null);
     if (!c || c.left) return leftAlone(c, item, url);
+    if (c.kind !== "http") {
+      queueBlobAdopt(item, url, c);
+      if (item.state === "complete") {
+        const meta = pendingBlobImports.get(item.id);
+        pendingBlobImports.delete(item.id);
+        if (meta) adoptCompletedBlob(item.id, meta).catch(() => {});
+      }
+      return;
+    }
     const name = c.name;
     let paused = false;
     try {
@@ -1456,6 +1728,19 @@ if (SAFARI) {
   });
 }
 
+if (!SAFARI && ext.downloads && ext.downloads.onChanged) {
+  ext.downloads.onChanged.addListener((delta) => {
+    if (!delta || !pendingBlobImports.has(delta.id)) return;
+    if (delta.state && delta.state.current === "complete") {
+      const meta = pendingBlobImports.get(delta.id);
+      pendingBlobImports.delete(delta.id);
+      adoptCompletedBlob(delta.id, meta).catch(() => {});
+    } else if (delta.state && delta.state.current === "interrupted") {
+      pendingBlobImports.delete(delta.id);
+    }
+  });
+}
+
 // ---- files the browser would open itself (a PDF, an MP3): made downloads -----------------
 
 // Options → General in the app: also take the listed types the browser shows or plays when a
@@ -1463,7 +1748,13 @@ if (SAFARI) {
 // down the download path above (where the rules and Alt apply). Firefox: taken from the answer
 // as a download is (`headersReceived`), else it opens.
 const OPENED = {
-  PDF: ["application/pdf"],
+  PDF: ["application/pdf", "application/x-pdf"],
+  DOC: ["application/msword"],
+  DOCX: ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  XLS: ["application/vnd.ms-excel"],
+  XLSX: ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  PPT: ["application/vnd.ms-powerpoint"],
+  PPTX: ["application/vnd.openxmlformats-officedocument.presentationml.presentation"],
   MP3: ["audio/mpeg", "audio/mp3"],
   MP4: ["video/mp4"],
   M4A: ["audio/mp4", "audio/x-m4a"],
@@ -1508,6 +1799,7 @@ function excludedHosts() {
 
 function openedMimes(r) {
   if (!r || !r.capture || !r.opened) return [];
+  if (hasWildcardType(r.types)) return [...new Set(Object.values(OPENED).flat())];
   const listed = new Set(r.types.split(/\s+/).map((s) => s.toUpperCase()));
   return [...new Set(Object.entries(OPENED).flatMap(([k, m]) => (listed.has(k) ? m : [])))];
 }
@@ -1529,6 +1821,8 @@ async function syncOpenedRule() {
     condition: {
       resourceTypes: ["main_frame"],
       responseHeaders: [{ header: "content-type", values: openedTypes.map((m) => `${m}*`) }],
+      // Never overwrite an existing `Content-Disposition: attachment; filename="…"`.
+      excludedResponseHeaders: [{ header: "content-disposition", values: ["attachment*"] }],
       // Options' excluded sites keep opening in the browser.
       ...(hosts.wide.length ? { excludedRequestDomains: hosts.wide } : {}),
     },

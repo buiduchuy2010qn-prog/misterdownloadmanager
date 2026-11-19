@@ -114,6 +114,13 @@ pub struct Command {
     /// From the browser's toolbar button: leave this site's downloads (a host name) to the
     /// browser from now on (Options → File types → excluded sites).
     pub exclude_site: Option<String>,
+    /// From the browser (`blob:` / `data:` downloads): path on disk of a completed or staged
+    /// file to adopt/move into MDM's download folder and record as finished.
+    pub import_file: Option<String>,
+    /// Whether `import_file` is a temporary staging file created by nmhost (always move into
+    /// MDM's folder and remove the temp copy) rather than a file the browser already saved in
+    /// the user's download folder (kept in place if already in the target folder).
+    pub import_move: bool,
 }
 
 /// One cookie as the browser keeps it (`cookies.getAll`'s fields, under the extension's names

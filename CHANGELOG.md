@@ -5,6 +5,26 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-11-19
+
+### Added
+
+- **Catch-all browser downloads (`*` by default):** MDM now captures every download initiated in the browser regardless of file extension — including PDF, Word (`.doc`/`.docx`), Excel, PowerPoint, images, text files, and extensionless URLs — while keeping clipboard auto-capture selective and still respecting `Alt + Click` bypass and excluded sites.
+- **`blob:` & `data:` download capture (Zalo Web, ChatGPT, Gemini, Canva, Mega…):** Chromium/Firefox extensions now capture in-memory `blob:` and `data:` downloads via chunked native messaging directly into MDM (`nmhost` staging → MDM folder + completed row, cancelling the browser download) with automatic local adoption fallback for sandboxed `blob:null` downloads.
+- **Inline PDF & Office capture improvements:** Preserves existing `Content-Disposition: attachment; filename="…"` headers (`excludedResponseHeaders`) and adds Office document MIME types to inline capture rules.
+
+### Fixed
+
+- **Fixed Chrome extension being auto-disabled by VPN extensions (e.g. Urban VPN Proxy):** Removed the required `"proxy"` permission from Chromium's `extension/manifest.json` so VPN extensions using `chrome.management` never disable Mister Download Manager.
+- **Win32 `TrayProbe` & native file opener (`win32.rs`):** `TrayProbe::fresh()` keeps the last known tray state on a 250 ms timeout instead of exiting on close during brief Explorer stalls; `tray_icon_held()` rescans icon IDs after an Explorer restart; `open_file_native()` reports accurate `ShellExecuteW` error codes and handles paths with spaces safely in the Open With dialog.
+- **FDM Modern polish:** Animated indeterminate progress bar for unknown-size downloads; allow user overrides of `fdm-modern.toml` in the themes folder; restored formatting and GitHub handles in `README.md` and `NOTICE.md`; formatted workspace with `cargo fmt`.
+
+## [0.5.6] - 2026-11-16
+
+### Fixed
+
+- Moved Win32 tray `Shell_NotifyIconW` / `Shell_NotifyIconGetRect` probing off the UI thread (`mdm-tray-probe`) to prevent UI freezes and 8 s watchdog reports when `explorer.exe` or Windhawk mods stall or restart the taskbar.
+
 ### Added
 
 - Videos a site sends in pieces (HLS and DASH streams, as many sites other than YouTube do) download several pieces at once, as many as **Options → Connection** gives a file (8 by default): against a test server that slows each connection, 4 at once took under a third of the time, 8 under a fifth. With a speed limit on, they still come one at a time, so the limit holds; a video in one file, as most of YouTube's are, is unchanged. The command line's `video-get` and `playlist-get` take `-c` for it ([#531](https://github.com/anefzaoui/misterdownloadmanager/issues/531)).

@@ -14,8 +14,7 @@
         "storage",
         "webRequest",
         "scripting",
-        "declarativeNetRequestWithHostAccess",
-        "proxy"
+        "declarativeNetRequestWithHostAccess"
     ],
     "host_permissions": [
         "<all_urls>"

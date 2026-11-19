@@ -1466,7 +1466,14 @@ fn toolbar_modern(
             continue;
         }
         if matches!(icon, Icon::Resume | Icon::Delete | Icon::Scheduler) {
-            winui::fill_l(&p, x + 2.0, btn_y + 6.0, x + 2.0, btn_y + 23.0, c.menubar_line);
+            winui::fill_l(
+                &p,
+                x + 2.0,
+                btn_y + 6.0,
+                x + 2.0,
+                btn_y + 23.0,
+                c.menubar_line,
+            );
             x += 9.0;
         }
         let dropdown = is_dropdown(icon);
@@ -1486,7 +1493,11 @@ fn toolbar_modern(
         let on_arrow = dropdown && resp.hover_pos().is_some_and(past_button);
         if resp.hovered() && (*enabled || dropdown) {
             let down = resp.is_pointer_button_down_on();
-            let fill_c = if down { c.toolbar_pressed } else { c.toolbar_hot };
+            let fill_c = if down {
+                c.toolbar_pressed
+            } else {
+                c.toolbar_hot
+            };
             p.rect_filled(rc, radius, fill_c);
             p.rect_stroke(
                 rc,
@@ -1506,7 +1517,8 @@ fn toolbar_modern(
             }
             let _ = on_arrow;
         }
-        let icon_rc = Rect::from_center_size(pos2(bx + bw / 2.0, btn_y + btn_h / 2.0), vec2(20.0, 20.0));
+        let icon_rc =
+            Rect::from_center_size(pos2(bx + bw / 2.0, btn_y + btn_h / 2.0), vec2(20.0, 20.0));
         icon.image(*enabled).paint_at(ui, winui::rect(icon_rc));
         if dropdown {
             let ax = bx + bw + 3.0;
@@ -2006,9 +2018,7 @@ pub fn categories(
     // Connector dots (#6d6d6d, every other pixel), painted first; expander boxes cover them.
     let modern_tree = crate::theme::metrics().list_row > 18.0;
     let roots: Vec<usize> = (0..rows.len()).filter(|&k| rows[k].level == 0).collect();
-    if !modern_tree
-        && let (Some(&first), Some(&last)) = (roots.first(), roots.last())
-    {
+    if !modern_tree && let (Some(&first), Some(&last)) = (roots.first(), roots.last()) {
         let mut y = row_top(first);
         while y <= row_top(last) + 8.0 {
             if (y - tree.top()) as i32 % 2 == 0 {
