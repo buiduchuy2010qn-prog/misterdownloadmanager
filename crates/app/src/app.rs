@@ -49,6 +49,10 @@ enum Pending {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Cmd {
     AddUrl,
+    /// Help → built-in quick usage guide (in-app, Vietnamese & English).
+    UsageGuide,
+    /// Help → browser extension setup dialog (re-openable anytime).
+    BrowserExtension,
     /// Help → a page of the website (`""` = home).
     HelpPage(&'static str),
     Shortcuts,
@@ -449,6 +453,7 @@ pub struct App {
     updates: Option<crate::help::Updates>,
     shortcuts: Option<crate::help::Shortcuts>,
     tell_friend: Option<crate::help::TellFriend>,
+    guide: Option<crate::extension::UsageGuide>,
     /// The language picker (first start, View → Language...).
     lang_picker: Option<crate::langpick::Picker>,
     /// The video helpers' offer (the first start's, after the language).
@@ -1088,6 +1093,7 @@ impl App {
             updates: None,
             shortcuts: None,
             tell_friend: None,
+            guide: None,
             lang_picker: ask_language.then(|| crate::langpick::Picker::new(true, None)),
             helpers: None,
             shown_existing: None,
@@ -2183,6 +2189,12 @@ impl App {
                 offer.open_safari_steps();
                 self.extension = Some(offer);
             }
+            "chromium-steps" => {
+                let mut offer = crate::extension::Extension::new();
+                offer.open_chromium_steps();
+                self.extension = Some(offer);
+            }
+            "guide" => self.run(Cmd::UsageGuide, None, ctx),
             "language" => self.run(Cmd::ChooseLanguage, None, ctx),
             "move-rename" => self.run(Cmd::MoveRename, None, ctx),
             "shortcuts" => self.run(Cmd::Shortcuts, None, ctx),
@@ -5455,6 +5467,20 @@ impl App {
                 }
             }
             Cmd::AddMagnet => self.open_torrent_dialog(None, ctx),
+            Cmd::UsageGuide => {
+                if self.guide.is_none() {
+                    self.guide = Some(crate::extension::UsageGuide);
+                } else {
+                    dialogs::raise(ctx, dialogs::dialog_viewport("usage-guide"));
+                }
+            }
+            Cmd::BrowserExtension => {
+                if self.extension.is_none() {
+                    self.extension = Some(crate::extension::Extension::new());
+                } else {
+                    dialogs::raise(ctx, dialogs::dialog_viewport("extension"));
+                }
+            }
             Cmd::HelpPage(page) => crate::help::open_page(page),
             Cmd::Shortcuts => self.shortcuts = Some(crate::help::Shortcuts),
             Cmd::ReportProblem => crate::help::report_problem(),
@@ -5976,6 +6002,19 @@ impl App {
             // where IDM has "Grabber Help"; "Report a problem" where "Contact IDM Support";
             // Keyboard shortcuts added; no Tip of the Day.
             _ => vec![
+                I(
+                    crate::extension::guide_menu_label(),
+                    Cmd::UsageGuide,
+                    true,
+                    false,
+                ),
+                I(
+                    crate::extension::extension_menu_label(),
+                    Cmd::BrowserExtension,
+                    true,
+                    false,
+                ),
+                Sep,
                 I("H&elp contents", Cmd::HelpPage("README.md"), true, false),
                 I(
                     "&Tutorials",
@@ -8139,6 +8178,20 @@ impl App {
                     self.dirty = true;
                 }
                 Outcome::Closed => self.extension = None,
+            }
+        }
+        if let Some(d) = &mut self.guide {
+            match d.show(ctx) {
+                Outcome::Open => {}
+                Outcome::Done(true) => {
+                    self.guide = None;
+                    if self.extension.is_none() {
+                        self.extension = Some(crate::extension::Extension::new());
+                    } else {
+                        dialogs::raise(ctx, dialogs::dialog_viewport("extension"));
+                    }
+                }
+                Outcome::Done(false) | Outcome::Closed => self.guide = None,
             }
         }
         if let Some(d) = &mut self.about

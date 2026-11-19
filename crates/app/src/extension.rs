@@ -19,10 +19,71 @@ use crate::dialogs::{Outcome, window};
 use crate::winui::{self, ButtonKind, r};
 
 const W: f32 = 520.0;
+const W_GUIDE: f32 = 560.0;
 const BANNER: f32 = 84.0;
 const ROW: f32 = 34.0;
 /// Safari's row (macOS), as Options and the native host name it.
 const SAFARI: &str = "Apple Safari";
+
+fn is_vi() -> bool {
+    crate::i18n::code().starts_with("vi")
+}
+
+fn bi<'a>(vi: &'a str, en: &'a str) -> &'a str {
+    if is_vi() { vi } else { en }
+}
+
+/// Help menu label for the in-app quick usage guide.
+pub fn guide_menu_label() -> &'static str {
+    bi("&Hướng dẫn sử dụng...", "&Usage guide...")
+}
+
+/// Help menu label for opening the browser extension setup dialog anytime.
+pub fn extension_menu_label() -> &'static str {
+    bi("&Cài tiện ích trình duyệt...", "&Browser extension...")
+}
+
+/// The extensions settings URL for a Chromium-family browser.
+pub fn extensions_url(browser: &str) -> &'static str {
+    let lower = browser.to_ascii_lowercase();
+    if lower.contains("edge") {
+        "edge://extensions"
+    } else if lower.contains("brave") {
+        "brave://extensions"
+    } else if lower.contains("opera") {
+        "opera://extensions"
+    } else if lower.contains("vivaldi") {
+        "vivaldi://extensions"
+    } else {
+        "chrome://extensions"
+    }
+}
+
+/// Bundled Chromium extension folder beside the running executable (when present) and the path
+/// shown to the user in the in-app guide.
+fn chromium_extension_location() -> (Option<PathBuf>, String) {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+    if let Some(dir) = exe_dir.map(|d| d.join("extension").join("chromium")) {
+        let display = dir.display().to_string();
+        let existing = dir.is_dir().then_some(dir);
+        return (existing, display);
+    }
+    let fallback = if cfg!(windows) {
+        r"extension\chromium".to_owned()
+    } else {
+        "extension/chromium".to_owned()
+    };
+    (None, fallback)
+}
+
+fn open_browser(program: &std::path::Path, url: &str) {
+    #[cfg(windows)]
+    crate::win32::open_in(program, url);
+    #[cfg(unix)]
+    crate::unix::open_in(program, url);
+}
 
 /// Whether to offer the extension at this start: browser integration on and registered (not a
 /// portable copy, which registers nothing), no browser's extension seen yet, not refused.
@@ -48,6 +109,8 @@ pub struct Extension {
     set_up_seen: u64,
     /// The steps that add Safari's extension, while that window is open.
     steps: Option<SafariSteps>,
+    /// The in-app step-by-step setup guide for a Chromium browser, while open.
+    chromium_steps: Option<ChromiumSteps>,
 }
 
 /// Whether `row` (a browser as the window lists it) is among the browsers seen (as Options
@@ -67,6 +130,11 @@ fn is_seen(seen: &[String], row: &str) -> bool {
 /// page on addons.mozilla.org, not the Chrome Web Store.
 fn is_gecko(row: &str) -> bool {
     mdm_ipc::browsers::named(row).is_some_and(|b| b.family == mdm_ipc::browsers::Family::Gecko)
+}
+
+enum OpenSteps {
+    Safari,
+    Chromium(String, Option<PathBuf>),
 }
 
 impl Extension {
@@ -98,12 +166,27 @@ impl Extension {
             looked: std::time::Instant::now(),
             set_up_seen: 0,
             steps: None,
+            chromium_steps: None,
         }
     }
 
     /// The Safari steps, open at once (`/show safari-steps`: screenshots).
     pub fn open_safari_steps(&mut self) {
         self.steps = Some(SafariSteps);
+    }
+
+    /// The Chromium steps, open at once (`/show chromium-steps`).
+    pub fn open_chromium_steps(&mut self) {
+        let (name, program) = self.first_chromium_browser();
+        self.chromium_steps = Some(ChromiumSteps::new(name, program));
+    }
+
+    fn first_chromium_browser(&self) -> (String, Option<PathBuf>) {
+        self.browsers
+            .iter()
+            .find(|(n, _)| n != SAFARI && !is_gecko(n))
+            .cloned()
+            .unwrap_or_else(|| ("Google Chrome".to_owned(), None))
     }
 
     /// Open until closed; Done when "Don't ask again" was pressed.
@@ -122,7 +205,7 @@ impl Extension {
         // A long translation's subline makes the banner taller (winui::banner).
         let extra = crate::dialogs::grow_extra(ctx, "extension-banner");
         let mut answer = None;
-        let mut open_steps = false;
+        let mut open_steps: Option<OpenSteps> = None;
         let outcome = window(
             ctx,
             "extension",
@@ -137,18 +220,37 @@ impl Extension {
                     Some(true) => Outcome::Done(()),
                     Some(false) => Outcome::Closed,
                     // Escape closes the steps first, when they are open.
-                    None if self.steps.is_none() && winui::escape_pressed(ui) => Outcome::Closed,
+                    None if self.steps.is_none()
+                        && self.chromium_steps.is_none()
+                        && winui::escape_pressed(ui) =>
+                    {
+                        Outcome::Closed
+                    }
                     None => Outcome::Open,
                 }
             },
         );
-        if open_steps && self.steps.is_none() {
-            self.steps = Some(SafariSteps);
+        match open_steps {
+            Some(OpenSteps::Safari) if self.steps.is_none() => {
+                self.steps = Some(SafariSteps);
+            }
+            Some(OpenSteps::Chromium(name, program)) => {
+                if self.chromium_steps.is_some() {
+                    crate::dialogs::raise(ctx, crate::dialogs::dialog_viewport("chromium-steps"));
+                }
+                self.chromium_steps = Some(ChromiumSteps::new(name, program));
+            }
+            _ => {}
         }
         if let Some(steps) = &mut self.steps
             && !matches!(steps.show(ctx), Outcome::Open)
         {
             self.steps = None;
+        }
+        if let Some(steps) = &mut self.chromium_steps
+            && !matches!(steps.show(ctx), Outcome::Open)
+        {
+            self.chromium_steps = None;
         }
         outcome
     }
@@ -159,7 +261,7 @@ impl Extension {
         o: Pos2,
         h: f32,
         answer: &mut Option<bool>,
-        open_steps: &mut bool,
+        open_steps: &mut Option<OpenSteps>,
     ) {
         let p = ui.painter().clone();
         let (ink, muted) = (winui::TEXT(), winui::MUTED());
@@ -179,17 +281,10 @@ impl Extension {
         // Everything below it moves down with a taller banner.
         let o = o + egui::vec2(0.0, extra);
 
-        // One row per browser: its name, and the button that opens the extension's page in it:
-        // Firefox's on addons.mozilla.org, the Chrome Web Store's for the others (the tutorial
-        // while STORE_ID is a placeholder, as in a build of its own).
-        let store = mdm_ipc::extension::store_page();
+        // One row per browser: Firefox's family opens addons.mozilla.org, Safari opens its
+        // built-in steps, and Chromium browsers open the in-app fork extension guide.
         for (k, (name, program)) in self.browsers.iter().enumerate() {
             let y = BANNER + 16.0 + k as f32 * ROW;
-            let page = if is_gecko(name) {
-                Some(mdm_ipc::extension::FIREFOX_PAGE.to_owned())
-            } else {
-                store.clone()
-            };
             winui::text_font(
                 &p,
                 winui::tahoma_bold(),
@@ -204,15 +299,16 @@ impl Extension {
                 ink,
             );
             let safari = name == SAFARI;
+            let gecko = is_gecko(name);
             let label = if safari {
                 // i18n: button in the browser extension's window, on Safari's row: open the steps that turn the extension on
                 "How to Add"
-            } else if page.is_none() {
-                // i18n: button in the browser extension's window: open the tutorial that adds the extension
-                "Show me how"
-            } else {
+            } else if gecko {
                 // i18n: button in the browser extension's window: open the extension's page in that browser
                 "Add the extension"
+            } else {
+                // i18n: button in the browser extension's window: open the tutorial that adds the extension
+                "Show me how"
             };
             // As wide as its label in this language (#192).
             let (add_x, add_w) =
@@ -244,22 +340,15 @@ impl Extension {
                 None,
             );
             if add.clicked() && safari {
-                *open_steps = true;
-            } else if add.clicked() {
-                // No store page: the tutorial on the website, in the interface language.
-                let url = page.clone().unwrap_or_else(|| {
-                    crate::help::page_url(mdm_ipc::extension::GUIDE_DOC, crate::i18n::code())
-                });
-                let url = url.as_str();
+                *open_steps = Some(OpenSteps::Safari);
+            } else if add.clicked() && gecko {
+                let url = mdm_ipc::extension::FIREFOX_PAGE;
                 match program {
-                    #[cfg(windows)]
-                    Some(program) => crate::win32::open_in(program, url),
-                    #[cfg(unix)]
-                    Some(program) => crate::unix::open_in(program, url),
-                    None => {
-                        crate::launch::open(url);
-                    }
+                    Some(program) => open_browser(program, url),
+                    None => crate::launch::open(url),
                 }
+            } else if add.clicked() {
+                *open_steps = Some(OpenSteps::Chromium(name.clone(), program.clone()));
             }
         }
 
@@ -303,8 +392,9 @@ impl Extension {
             )
         } else {
             (
-                crate::i18n::t(
-                    "Once it is added, this window says so. Chrome may also ask by itself at its next start.",
+                bi(
+                    "Bấm \"Chỉ tôi cách làm\" cạnh trình duyệt để xem hướng dẫn 1 lần (~20 giây). Cài xong sẽ tự báo Đã kết nối.",
+                    "Click \"Show me how\" beside your browser for the 1-time setup guide (~20s). Updates automatically once connected.",
                 )
                 .to_owned(),
                 muted,
@@ -315,28 +405,18 @@ impl Extension {
         }
         winui::etched_h(&p, o.x + 16.0, o.y + h - 46.0, W - 32.0);
         let y = h - 36.0;
-        // The fallback, when a store can't be used (a managed browser, a store turned off): the
-        // tutorial, which adds it by hand.
-        if store.is_some()
-            && winui::link(
-                ui,
-                &p,
-                o.x + 18.0,
-                o.y + y + 17.0,
-                // i18n: link in the browser extension's window: the tutorial that adds it without the browser's store
-                "Install it by hand",
-                "by-hand",
-            )
-        {
-            let local_ext = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.join("extension").join("chromium")))
-                .filter(|d| d.is_dir());
-            if let Some(dir) = local_ext {
-                crate::launch::open(dir);
-            } else {
-                crate::help::open_page(mdm_ipc::extension::GUIDE_DOC);
-            }
+        // Direct link to open the step-by-step manual Chromium extension guide.
+        if winui::link(
+            ui,
+            &p,
+            o.x + 18.0,
+            o.y + y + 17.0,
+            // i18n: link in the browser extension's window: the tutorial that adds it without the browser's store
+            "Install it by hand",
+            "by-hand",
+        ) {
+            let (name, program) = self.first_chromium_browser();
+            *open_steps = Some(OpenSteps::Chromium(name, program));
         }
         // As wide as their labels in this language (#192), Don't ask again only while no
         // extension has reached MDM.
@@ -505,6 +585,543 @@ const STEPS: [&str; 8] = [
     // i18n: step 8 of turning on the Safari extension
     "Turn on \"Mister Download Manager\" and allow it on all websites.",
 ];
+
+/// In-app step-by-step setup guide for loading the fork's bundled Chromium extension once,
+/// with 1-click Copy / Open buttons and live connection detection.
+pub struct ChromiumSteps {
+    browser: String,
+    program: Option<PathBuf>,
+    copied: Option<(String, std::time::Instant)>,
+    connected: bool,
+    looked: std::time::Instant,
+}
+
+impl ChromiumSteps {
+    pub fn new(browser: String, program: Option<PathBuf>) -> Self {
+        Self {
+            browser,
+            program,
+            copied: None,
+            connected: mdm_ipc::extension::seen(),
+            looked: std::time::Instant::now(),
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome<()> {
+        if self.looked.elapsed() >= Duration::from_secs(1) {
+            self.looked = std::time::Instant::now();
+            self.connected = mdm_ipc::extension::seen();
+        }
+        if self
+            .copied
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= Duration::from_secs(4))
+        {
+            self.copied = None;
+        }
+        ctx.request_repaint_after(Duration::from_secs(1));
+
+        let url = extensions_url(&self.browser);
+        let display_browser = if self.browser.is_empty() {
+            bi("trình duyệt", "your browser")
+        } else {
+            self.browser.as_str()
+        };
+        let title = if is_vi() {
+            format!("Cài tiện ích cho {display_browser}")
+        } else {
+            format!("Add the extension to {display_browser}")
+        };
+        let (existing_dir, folder_str) = chromium_extension_location();
+        let program = self.program.clone();
+        let connected = self.connected;
+        let copied_msg = self.copied.as_ref().map(|(m, _)| m.clone());
+        let mut new_copied: Option<String> = None;
+
+        let banner_extra = crate::dialogs::grow_extra(ctx, "chromium-banner");
+        let body_extra = crate::dialogs::grow_extra(ctx, "chromium-body");
+        let base_h = BANNER + 356.0;
+        let total_h = base_h + banner_extra + body_extra;
+
+        let out = window(
+            ctx,
+            "chromium-steps",
+            &title,
+            [W_GUIDE, total_h],
+            false,
+            winui::BG(),
+            |ui, o| {
+                let p = ui.painter().clone();
+                let b_extra = winui::banner(
+                    ui,
+                    &p,
+                    o,
+                    W_GUIDE,
+                    "chromium-banner",
+                    &title,
+                    bi(
+                        "Chỉ cần làm 1 lần (~20 giây). Các bản cập nhật sau tự làm mới tiện ích, không cần cài lại.",
+                        "One-time setup (~20 seconds). Future app updates refresh the extension folder automatically.",
+                    ),
+                );
+                let o = o + egui::vec2(0.0, b_extra);
+                let (ink, muted) = (winui::TEXT(), winui::MUTED());
+                let mut y = BANNER + 16.0;
+
+                // Step 1: open browser extensions page.
+                winui::text_font(
+                    &p,
+                    winui::tahoma_bold(),
+                    o.x + 20.0,
+                    o.y + y + 12.0,
+                    "1.",
+                    ink,
+                );
+                let step1 = if is_vi() {
+                    format!(
+                        "Mở trang tiện ích trình duyệt: dán {url} vào thanh địa chỉ rồi bấm Enter."
+                    )
+                } else {
+                    format!(
+                        "Open the extensions page: paste {url} into your browser's address bar and press Enter."
+                    )
+                };
+                let lines = winui::paragraph(
+                    &p,
+                    o.x + 44.0,
+                    o.y + y + 12.0,
+                    &step1,
+                    ink,
+                    o.x + W_GUIDE - 20.0,
+                    14.0,
+                );
+                y += 14.0 * lines.max(1) as f32 + 8.0;
+
+                let copy_url_lbl = bi("Copy địa chỉ", "Copy address");
+                let open_br_lbl = bi("Mở trình duyệt", "Open browser");
+                if let Some(prog) = &program {
+                    let btns = winui::buttons_from_left(
+                        &p,
+                        44.0,
+                        8.0,
+                        &[(copy_url_lbl, 108.0), (open_br_lbl, 118.0)],
+                        240.0,
+                    );
+                    if winui::button(
+                        ui,
+                        r(o, btns[0].0, y, btns[0].1, 24.0),
+                        copy_url_lbl,
+                        ButtonKind::Accent,
+                        false,
+                        None,
+                    )
+                    .clicked()
+                    {
+                        crate::copy_text(ui.ctx(), url.to_owned());
+                        new_copied = Some(if is_vi() {
+                            format!(
+                                "\u{2714} Đã sao chép {url} — dán (Ctrl+V) vào thanh địa chỉ trình duyệt!"
+                            )
+                        } else {
+                            format!(
+                                "\u{2714} Copied {url} — paste (Ctrl+V) into your browser's address bar!"
+                            )
+                        });
+                    }
+                    if winui::button(
+                        ui,
+                        r(o, btns[1].0, y, btns[1].1, 24.0),
+                        open_br_lbl,
+                        ButtonKind::Normal,
+                        false,
+                        None,
+                    )
+                    .clicked()
+                    {
+                        crate::copy_text(ui.ctx(), url.to_owned());
+                        open_browser(prog, url);
+                        new_copied = Some(if is_vi() {
+                            format!(
+                                "\u{2714} Đã mở trình duyệt và sao chép {url} (nếu chưa tự mở trang, hãy bấm Ctrl+V vào thanh địa chỉ)."
+                            )
+                        } else {
+                            format!(
+                                "\u{2714} Opened browser and copied {url} (paste Ctrl+V if it did not navigate automatically)."
+                            )
+                        });
+                    }
+                } else {
+                    let btns =
+                        winui::buttons_from_left(&p, 44.0, 8.0, &[(copy_url_lbl, 108.0)], 240.0);
+                    if winui::button(
+                        ui,
+                        r(o, btns[0].0, y, btns[0].1, 24.0),
+                        copy_url_lbl,
+                        ButtonKind::Accent,
+                        false,
+                        None,
+                    )
+                    .clicked()
+                    {
+                        crate::copy_text(ui.ctx(), url.to_owned());
+                        new_copied = Some(if is_vi() {
+                            format!(
+                                "\u{2714} Đã sao chép {url} — dán (Ctrl+V) vào thanh địa chỉ trình duyệt!"
+                            )
+                        } else {
+                            format!(
+                                "\u{2714} Copied {url} — paste (Ctrl+V) into your browser's address bar!"
+                            )
+                        });
+                    }
+                }
+                y += 24.0 + 12.0;
+
+                // Step 2: turn on Developer mode.
+                winui::text_font(
+                    &p,
+                    winui::tahoma_bold(),
+                    o.x + 20.0,
+                    o.y + y + 12.0,
+                    "2.",
+                    ink,
+                );
+                let lines = winui::paragraph(
+                    &p,
+                    o.x + 44.0,
+                    o.y + y + 12.0,
+                    bi(
+                        "Ở góc trên bên phải trang vừa mở, bật công tắc \"Chế độ cho nhà phát triển\" (Developer mode).",
+                        "At the top-right corner of that page, turn on \"Developer mode\".",
+                    ),
+                    ink,
+                    o.x + W_GUIDE - 20.0,
+                    14.0,
+                );
+                y += 14.0 * lines.max(1) as f32 + 12.0;
+
+                // Step 3: Load unpacked -> pick bundled extension folder.
+                winui::text_font(
+                    &p,
+                    winui::tahoma_bold(),
+                    o.x + 20.0,
+                    o.y + y + 12.0,
+                    "3.",
+                    ink,
+                );
+                let lines = winui::paragraph(
+                    &p,
+                    o.x + 44.0,
+                    o.y + y + 12.0,
+                    bi(
+                        "Bấm \"Tải tiện ích đã giải nén\" (Load unpacked) ở góc trên bên trái, rồi chọn thư mục sau:",
+                        "Click \"Load unpacked\" at the top-left, then select this extension folder:",
+                    ),
+                    ink,
+                    o.x + W_GUIDE - 20.0,
+                    14.0,
+                );
+                y += 14.0 * lines.max(1) as f32 + 6.0;
+
+                let box_rect = egui::Rect::from_min_size(
+                    egui::pos2(o.x + 44.0, o.y + y),
+                    egui::vec2(W_GUIDE - 64.0, 22.0),
+                );
+                winui::field_frame(&p, winui::rect(box_rect), winui::FieldLook::ReadOnly);
+                let shown_path = winui::ellipsize_middle(
+                    &p,
+                    &winui::tahoma(),
+                    &folder_str,
+                    box_rect.width() - 12.0,
+                );
+                winui::text(
+                    &p,
+                    box_rect.left() + 6.0,
+                    box_rect.top() + 15.0,
+                    &shown_path,
+                    ink,
+                );
+                if shown_path != folder_str {
+                    winui::full_on_hover(
+                        ui,
+                        winui::rect(box_rect),
+                        "chromium-ext-path",
+                        &folder_str,
+                    );
+                }
+                y += 22.0 + 8.0;
+
+                let copy_dir_lbl = bi("Copy đường dẫn", "Copy folder path");
+                let open_dir_lbl = bi("Mở thư mục tiện ích", "Open extension folder");
+                let dir_btns = winui::buttons_from_left(
+                    &p,
+                    44.0,
+                    8.0,
+                    &[(copy_dir_lbl, 118.0), (open_dir_lbl, 146.0)],
+                    260.0,
+                );
+                if winui::button(
+                    ui,
+                    r(o, dir_btns[0].0, y, dir_btns[0].1, 24.0),
+                    copy_dir_lbl,
+                    ButtonKind::Accent,
+                    false,
+                    None,
+                )
+                .clicked()
+                {
+                    crate::copy_text(ui.ctx(), folder_str.clone());
+                    new_copied = Some(
+                        bi(
+                            "\u{2714} Đã sao chép đường dẫn — bấm Ctrl+V vào ô Folder khi trình duyệt hỏi chọn thư mục!",
+                            "\u{2714} Copied folder path — press Ctrl+V in the browser's folder picker!",
+                        )
+                        .to_owned(),
+                    );
+                }
+                if winui::button(
+                    ui,
+                    r(o, dir_btns[1].0, y, dir_btns[1].1, 24.0),
+                    open_dir_lbl,
+                    ButtonKind::Normal,
+                    false,
+                    None,
+                )
+                .clicked()
+                {
+                    if let Some(dir) = &existing_dir {
+                        crate::launch::open(dir);
+                    } else if let Some(parent) = std::env::current_exe()
+                        .ok()
+                        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+                    {
+                        crate::launch::open(parent);
+                    } else {
+                        crate::help::open_page(mdm_ipc::extension::GUIDE_DOC);
+                    }
+                }
+                y += 24.0 + 12.0;
+
+                // Step 4: ready to use + Alt+Click tip.
+                winui::text_font(
+                    &p,
+                    winui::tahoma_bold(),
+                    o.x + 20.0,
+                    o.y + y + 12.0,
+                    "4.",
+                    ink,
+                );
+                let lines = winui::paragraph(
+                    &p,
+                    o.x + 44.0,
+                    o.y + y + 12.0,
+                    bi(
+                        "Xong! Từ giờ mọi tệp tải trên trình duyệt (Zalo Web, PDF, Word, ảnh, nén...) tự động vào MDM. Giữ phím Alt + Click để tải bằng trình duyệt khi cần.",
+                        "Done! Browser downloads (Zalo Web, PDF, Word, images, archives...) now go straight to MDM. Hold Alt + Click to download with the browser instead.",
+                    ),
+                    ink,
+                    o.x + W_GUIDE - 20.0,
+                    14.0,
+                );
+                y += 14.0 * lines.max(1) as f32 + 12.0;
+
+                // Live connection status or clipboard feedback.
+                let (status_text, status_color) = if connected {
+                    (
+                        bi(
+                            "\u{2714} Đã kết nối! Tiện ích trình duyệt đang hoạt động — bạn có thể đóng cửa sổ này.",
+                            "\u{2714} Connected! The browser extension is active — you can close this window.",
+                        ),
+                        winui::SUCCESS(),
+                    )
+                } else if let Some(msg) = copied_msg.as_deref() {
+                    (msg, winui::SUCCESS())
+                } else {
+                    (
+                        bi(
+                            "Đang chờ trình duyệt kết nối... Ngay khi chọn xong thư mục ở bước 3, dòng này sẽ tự chuyển sang màu xanh.",
+                            "Waiting for browser connection... As soon as you select the folder in step 3, this line turns green.",
+                        ),
+                        muted,
+                    )
+                };
+                let lines = winui::paragraph(
+                    &p,
+                    o.x + 20.0,
+                    o.y + y + 12.0,
+                    status_text,
+                    status_color,
+                    o.x + W_GUIDE - 20.0,
+                    14.0,
+                );
+                y += 14.0 * lines.max(1) as f32 + 10.0;
+
+                crate::dialogs::grow_px(ui.ctx(), "chromium-body", (y + 52.0) - base_h);
+
+                winui::etched_h(
+                    &p,
+                    o.x + 16.0,
+                    o.y + total_h - 46.0 - b_extra,
+                    W_GUIDE - 32.0,
+                );
+                let placed =
+                    winui::buttons_to_right(&p, W_GUIDE - 18.0, 8.0, &[("Close", 90.0)], 200.0);
+                let close = winui::button(
+                    ui,
+                    r(o, placed[0].0, total_h - 36.0 - b_extra, placed[0].1, 25.0),
+                    "Close",
+                    ButtonKind::Default,
+                    false,
+                    None,
+                );
+                if close.clicked() || winui::enter_pressed(ui) || winui::escape_pressed(ui) {
+                    Outcome::Closed
+                } else {
+                    Outcome::Open
+                }
+            },
+        );
+        if let Some(msg) = new_copied {
+            self.copied = Some((msg, std::time::Instant::now()));
+        }
+        out
+    }
+}
+
+/// Sections shown in the built-in Usage Guide window (`Help → Usage guide...`):
+/// `(vi_title, en_title, vi_body, en_body)`.
+const GUIDE_SECTIONS: [(&str, &str, &str, &str); 5] = [
+    (
+        "1. Bắt tải tự động trên trình duyệt (Zalo Web, PDF, Word, ảnh...)",
+        "1. Automatic browser capture (Zalo Web, PDF, Word, images...)",
+        "Cài tiện ích trình duyệt 1 lần (bấm nút \"Cài tiện ích trình duyệt...\" bên dưới). Sau đó mọi tệp bạn tải trên Chrome, Edge, Brave, Firefox sẽ tự động chạy vào MDM. Khi muốn tải bằng trình duyệt, chỉ cần giữ phím Alt + Click.",
+        "Install the browser extension once (click \"Browser extension...\" below). Downloads in Chrome, Edge, Brave and Firefox then go straight into MDM. Hold Alt + Click anytime to download with the browser instead.",
+    ),
+    (
+        "2. Tải thủ công & bắt link từ Clipboard",
+        "2. Manual downloads & clipboard capture",
+        "Bấm \"+ Thêm URL\" (Ctrl+N) để dán link trực tiếp, hoặc chỉ cần copy (Ctrl+C) một đường link tải — MDM sẽ tự nhận và hỏi tải ngay. Tệp được chia nhiều luồng song song để đạt tốc độ cao nhất.",
+        "Click \"+ Add URL\" (Ctrl+N) to paste a link directly, or copy (Ctrl+C) any download link and MDM offers to download it right away. Files split into parallel connections for maximum speed.",
+    ),
+    (
+        "3. Tải Video & Torrent / Magnet",
+        "3. Videos & Torrents / Magnet links",
+        "Vào Tác vụ → Tải video từ trang web (hoặc bấm nút tải hiện trên video sau khi cài tiện ích) để tải video chất lượng cao. Bạn cũng có thể mở file .torrent hoặc dán link magnet trong menu Tệp.",
+        "Open Tasks → Download video from a page (or use the Download button over web videos once the extension is installed). You can also open .torrent files or paste magnet links from the File menu.",
+    ),
+    (
+        "4. Phân loại tệp, Hàng đợi & Lập lịch",
+        "4. Categories, Queues & Scheduler",
+        "Tệp tải xong tự sắp vào các mục Tài liệu, Nén, Chương trình, Nhạc, Video. Nhấp chuột phải vào tệp để mở, mở thư mục chứa tệp hoặc đổi tên; dùng Trình lập lịch để hẹn giờ tải hàng loạt.",
+        "Finished files sort into Documents, Compressed, Programs, Music and Video. Right-click any download to open, reveal in folder, or rename; use the Scheduler to queue batch downloads.",
+    ),
+    (
+        "5. Cập nhật tự động (OTA)",
+        "5. Automatic updates (OTA)",
+        "Vào Trợ giúp → Kiểm tra cập nhật... để lên phiên bản mới nhất. Bản cập nhật tự làm mới cả thư mục tiện ích (trên Chrome chỉ cần bấm tải lại tiện ích hoặc mở lại trình duyệt).",
+        "Open Help → Check for updates... to install new releases. Updates also refresh the bundled extension folder automatically (in Chrome, click Reload or restart Chrome).",
+    ),
+];
+
+/// In-app quick usage guide (`Help → Usage guide...`). Returns `Outcome::Done(true)` when the
+/// user clicks the button to open the Browser Extension setup dialog.
+pub struct UsageGuide;
+
+impl UsageGuide {
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome<bool> {
+        let banner_extra = crate::dialogs::grow_extra(ctx, "guide-banner");
+        let body_extra = crate::dialogs::grow_extra(ctx, "guide-body");
+        let base_h = BANNER + 390.0;
+        let total_h = base_h + banner_extra + body_extra;
+        let title = bi("Hướng dẫn sử dụng", "Usage guide");
+
+        window(
+            ctx,
+            "usage-guide",
+            title,
+            [W_GUIDE, total_h],
+            false,
+            winui::BG(),
+            |ui, o| {
+                let p = ui.painter().clone();
+                let b_extra = winui::banner(
+                    ui,
+                    &p,
+                    o,
+                    W_GUIDE,
+                    "guide-banner",
+                    bi("Hướng dẫn sử dụng nhanh", "Quick usage guide"),
+                    bi(
+                        "Tóm tắt cách cài đặt và sử dụng Mister Download Manager ngay trong ứng dụng.",
+                        "Everything you need to set up and use Mister Download Manager.",
+                    ),
+                );
+                let o = o + egui::vec2(0.0, b_extra);
+                let ink = winui::TEXT();
+                let mut y = BANNER + 16.0;
+
+                for (vi_h, en_h, vi_b, en_b) in GUIDE_SECTIONS {
+                    winui::text_font(
+                        &p,
+                        winui::tahoma_bold(),
+                        o.x + 20.0,
+                        o.y + y + 12.0,
+                        bi(vi_h, en_h),
+                        ink,
+                    );
+                    y += 16.0;
+                    let lines = winui::paragraph(
+                        &p,
+                        o.x + 20.0,
+                        o.y + y + 12.0,
+                        bi(vi_b, en_b),
+                        ink,
+                        o.x + W_GUIDE - 20.0,
+                        14.0,
+                    );
+                    y += 14.0 * lines.max(1) as f32 + 12.0;
+                }
+
+                crate::dialogs::grow_px(ui.ctx(), "guide-body", (y + 52.0) - base_h);
+
+                winui::etched_h(
+                    &p,
+                    o.x + 16.0,
+                    o.y + total_h - 46.0 - b_extra,
+                    W_GUIDE - 32.0,
+                );
+                let btn_y = total_h - 36.0 - b_extra;
+                let ext_lbl = bi("Cài tiện ích trình duyệt...", "Browser extension...");
+                let ext_at = winui::buttons_from_left(&p, 18.0, 8.0, &[(ext_lbl, 175.0)], 280.0)[0];
+                let open_ext = winui::button(
+                    ui,
+                    r(o, ext_at.0, btn_y, ext_at.1, 25.0),
+                    ext_lbl,
+                    ButtonKind::Accent,
+                    false,
+                    None,
+                );
+                let close_at =
+                    winui::buttons_to_right(&p, W_GUIDE - 18.0, 8.0, &[("Close", 90.0)], 160.0)[0];
+                let close = winui::button(
+                    ui,
+                    r(o, close_at.0, btn_y, close_at.1, 25.0),
+                    "Close",
+                    ButtonKind::Default,
+                    false,
+                    None,
+                );
+                if open_ext.clicked() {
+                    Outcome::Done(true)
+                } else if close.clicked() || winui::enter_pressed(ui) || winui::escape_pressed(ui) {
+                    Outcome::Closed
+                } else {
+                    Outcome::Open
+                }
+            },
+        )
+    }
+}
 
 /// The browsers whose extension reached the app, by Options' names.
 fn seen_names() -> Vec<String> {
@@ -746,6 +1363,26 @@ mod tests {
         }
         for b in ["Google Chrome", "Helium", "Brave", "Your browser", ""] {
             assert!(!is_gecko(b), "{b}");
+        }
+    }
+
+    #[test]
+    fn chromium_extensions_urls_match_each_browser() {
+        assert_eq!(extensions_url("Google Chrome"), "chrome://extensions");
+        assert_eq!(extensions_url("Microsoft Edge"), "edge://extensions");
+        assert_eq!(extensions_url("Brave"), "brave://extensions");
+        assert_eq!(extensions_url("Opera"), "opera://extensions");
+        assert_eq!(extensions_url("Vivaldi"), "vivaldi://extensions");
+        assert_eq!(extensions_url("Chromium"), "chrome://extensions");
+        assert_eq!(extensions_url(""), "chrome://extensions");
+    }
+
+    #[test]
+    fn usage_guide_sections_are_bilingual_and_non_empty() {
+        assert_eq!(GUIDE_SECTIONS.len(), 5);
+        for (vi_h, en_h, vi_b, en_b) in GUIDE_SECTIONS {
+            assert!(!vi_h.is_empty() && !en_h.is_empty());
+            assert!(!vi_b.is_empty() && !en_b.is_empty());
         }
     }
 }

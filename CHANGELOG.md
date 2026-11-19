@@ -7,11 +7,16 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ## [0.5.8] - 2026-11-19
 
+### Added
+
+- **Built-in Usage Guide & Browser Extension Setup Wizard (Vietnamese & English):**
+  - Added **Help → Usage guide...** (*Trợ giúp → Hướng dẫn sử dụng...*) and **Help → Browser extension...** (*Trợ giúp → Cài tiện ích trình duyệt...*) directly inside MDM so users can view the quick usage guide or reopen extension setup anytime without leaving the app.
+  - Clicking **Show me how** (*Chỉ tôi cách làm*) or **Install it by hand** (*Cài đặt thủ công*) for Chrome, Edge, Brave, Opera, or Vivaldi now opens an interactive in-app 4-step guide (`ChromiumSteps`) with 1-click **Copy `chrome://extensions`** / **Open browser**, **Copy folder path**, **Open extension folder**, and a live green **Connected** status indicator.
+
 ### Changed
 
 - **Dedicated Fork Extension ID (`blmdjmhebngbdplfgkeifiiknimefbjh`):** Generated a standalone RSA-2048 key in `extension/manifest.json` and registered `FORK_ID` in `crates/ipc` & `nmhost` so your fork's unpacked Chromium extension never collides with upstream's Chrome Web Store copy.
 - **Stop auto-installing upstream's old `0.5.2` Chrome Web Store extension:** `nmhost --register` no longer writes Chrome's external-extension registry key for upstream's store ID (`ejoleppdfgjdndddcjoehopknmlglojp`) and automatically cleans up any stale entry so Chrome won't reinstall the old upstream extension.
-- **Quick local folder shortcut:** Clicking *Install it by hand* in MDM's browser extension window opens the installed `extension\chromium` folder directly in Explorer when present.
 
 ## [0.5.7] - 2026-11-19
 
