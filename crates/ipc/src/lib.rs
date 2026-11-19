@@ -116,10 +116,12 @@ pub struct Command {
     pub exclude_site: Option<String>,
     /// From the browser (`blob:` / `data:` downloads): path on disk of a completed or staged
     /// file to adopt/move into MDM's download folder and record as finished.
+    #[schemars(skip)]
     pub import_file: Option<String>,
     /// Whether `import_file` is a temporary staging file created by nmhost (always move into
     /// MDM's folder and remove the temp copy) rather than a file the browser already saved in
     /// the user's download folder (kept in place if already in the target folder).
+    #[schemars(skip)]
     pub import_move: bool,
 }
 
