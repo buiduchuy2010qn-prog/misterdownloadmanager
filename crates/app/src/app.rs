@@ -53,6 +53,8 @@ enum Cmd {
     UsageGuide,
     /// Help → browser extension setup dialog (re-openable anytime).
     BrowserExtension,
+    /// Main banner / status bar → open the 4-step Chromium guide directly for the primary browser.
+    BrowserExtensionDirect,
     /// Help → a page of the website (`""` = home).
     HelpPage(&'static str),
     Shortcuts,
@@ -315,6 +317,8 @@ fn place_to_take(item: &Item, items: &[Item]) -> Option<PathBuf> {
 
 /// The status strip's height, under the list and the Categories pane.
 const STRIP_H: f32 = 22.0;
+/// The slim browser-extension setup banner shown below the toolbar until connected.
+const EXT_BANNER_H: f32 = 34.0;
 
 impl Cmd {
     /// The key that runs this command anywhere in the main window, as the shortcuts list writes
@@ -463,6 +467,13 @@ pub struct App {
     shown_existing: Option<crate::dialogs::ExistingFiles>,
     /// The browser extension's offer (extension.rs), and whether this run has weighed it.
     extension: Option<crate::extension::Extension>,
+    /// Direct standalone 4-step Chromium setup guide (first run on Chromium-only PCs, banner, status bar).
+    chromium_steps: Option<crate::extension::ChromiumSteps>,
+    /// Cached browser-extension status for the main-window banner and status strip (polled once/s).
+    ext_state: crate::extension::ExtState,
+    ext_checked: Instant,
+    /// Banner closed with `×` for this session (reappears next launch until connected).
+    ext_banner_dismissed: bool,
     extension_weighed: bool,
     /// The weekly update check, while it runs.
     auto_update: Option<crate::help::Slot>,
@@ -1098,6 +1109,10 @@ impl App {
             helpers: None,
             shown_existing: None,
             extension: None,
+            chromium_steps: None,
+            ext_state: crate::extension::state(),
+            ext_checked: Instant::now(),
+            ext_banner_dismissed: false,
             extension_weighed: false,
             auto_update: None,
             raise_updates: false,
@@ -1295,9 +1310,11 @@ impl App {
         let tw = winui::text_width_font(p, title_font.clone(), title);
         let ww = winui::text_width(p, why);
         let aw = winui::text_width(p, crate::i18n::t(action));
-        // The block: icon 40, title, reason, link; in the middle, or under the header when
-        // the list is short.
-        let block_h = 40.0 + 14.0 + 16.0 + 8.0 + 13.0 + 14.0 + 13.0;
+        let show_guide = !filtered && self.items.is_empty();
+        // The block: icon 40, title, reason, link (plus optional Usage guide link); in the middle,
+        // or under the header when the list is short.
+        let block_h =
+            40.0 + 14.0 + 16.0 + 8.0 + 13.0 + 14.0 + 13.0 + if show_guide { 22.0 } else { 0.0 };
         let top = (body.center().y - block_h / 2.0).max(body.top() + 16.0);
         let cx = body.center().x;
         // A download glyph in the muted ink (outlined, as the toolbar's icons are).
@@ -1316,12 +1333,167 @@ impl App {
         let y = y + 8.0 + 13.0;
         winui::text(p, cx - ww / 2.0, y, why, winui::MUTED());
         let y = y + 14.0 + 13.0;
-        winui::link(ui, p, cx - aw / 2.0, y, action, "empty-action").then_some(cmd)
+        let primary = winui::link(ui, p, cx - aw / 2.0, y, action, "empty-action").then_some(cmd);
+        let secondary = if show_guide {
+            let guide_txt = crate::extension::bi("Hướng dẫn sử dụng", "Usage guide");
+            let gw = winui::text_width(p, guide_txt);
+            winui::link(ui, p, cx - gw / 2.0, y + 22.0, guide_txt, "empty-guide")
+                .then_some(Cmd::UsageGuide)
+        } else {
+            None
+        };
+        primary.or(secondary)
+    }
+
+    /// Slim setup banner below the toolbar while no current fork extension (`>= 0.5.8`) has
+    /// connected yet. Returns `(banner_height, clicked_cmd)`.
+    fn ext_banner(&mut self, ui: &mut Ui, o: Pos2, w: f32) -> (f32, Option<Cmd>) {
+        if self.ext_checked.elapsed() >= Duration::from_secs(1) {
+            self.ext_checked = Instant::now();
+            self.ext_state = crate::extension::state();
+        }
+        if self.ext_state != crate::extension::ExtState::Connected {
+            ui.ctx().request_repaint_after(Duration::from_secs(2));
+        }
+        let show = self.ext_state != crate::extension::ExtState::Connected
+            && !self.ext_banner_dismissed
+            && self.settings.advanced_integration
+            && mdm_ipc::portable_dir().is_none();
+        if !show {
+            return (0.0, None);
+        }
+        let p = ui.painter().clone();
+        let top_rel = chrome::MENU_H + chrome::pane_top();
+        let top = o.y + top_rel;
+        let bar = egui::Rect::from_min_size(pos2(o.x, top), egui::vec2(w, EXT_BANNER_H));
+        p.rect_filled(winui::rect(bar), 0.0, winui::FIELD());
+        winui::fill_l(&p, o.x, top, o.x + w - 1.0, top, winui::FIELD_EDGE());
+        winui::fill_l(
+            &p,
+            o.x,
+            top + EXT_BANNER_H - 1.0,
+            o.x + w - 1.0,
+            top + EXT_BANNER_H - 1.0,
+            winui::FIELD_EDGE(),
+        );
+
+        let mut cmd = None;
+        let close_rect = winui::r(o, w - 28.0, top_rel + 6.0, 22.0, 22.0);
+        let cr = ui
+            .interact(
+                close_rect,
+                egui::Id::unique("ext-banner-close"),
+                winui::pointer_only(),
+            )
+            .on_hover_text(crate::i18n::t("Close"));
+        if let Some(fill) = winui::subtle_fill(winui::State::of(&cr, true), crate::theme::colors())
+        {
+            p.rect_filled(close_rect, crate::theme::metrics().part_radius, fill);
+        }
+        winui::text_font(
+            &p,
+            winui::arial_bold(),
+            o.x + w - 21.0,
+            top + 21.0,
+            crate::i18n::t("x"),
+            winui::MUTED(),
+        );
+        if cr.clicked() {
+            self.ext_banner_dismissed = true;
+        }
+
+        let is_outdated = matches!(self.ext_state, crate::extension::ExtState::Outdated(_));
+        let connect_lbl = if is_outdated {
+            crate::extension::bi("Cập nhật tiện ích", "Update extension")
+        } else {
+            crate::extension::bi("Kết nối ngay", "Connect now")
+        };
+        let guide_lbl = crate::extension::bi("Hướng dẫn", "Guide");
+        let btns = winui::buttons_to_right(
+            &p,
+            w - 34.0,
+            6.0,
+            &[(connect_lbl, 112.0), (guide_lbl, 84.0)],
+            190.0,
+        );
+        if winui::button(
+            ui,
+            winui::r(o, btns[0].0, top_rel + 5.0, btns[0].1, 24.0),
+            connect_lbl,
+            winui::ButtonKind::Accent,
+            false,
+            None,
+        )
+        .clicked()
+        {
+            cmd = Some(Cmd::BrowserExtensionDirect);
+        }
+        if winui::button(
+            ui,
+            winui::r(o, btns[1].0, top_rel + 5.0, btns[1].1, 24.0),
+            guide_lbl,
+            winui::ButtonKind::Normal,
+            false,
+            None,
+        )
+        .clicked()
+        {
+            cmd = Some(Cmd::UsageGuide);
+        }
+
+        let dot_color = if is_outdated {
+            crate::extension::warn_color()
+        } else {
+            winui::accent()
+        };
+        let dot_center = winui::rect(egui::Rect::from_center_size(
+            pos2(o.x + 16.0, top + EXT_BANNER_H / 2.0),
+            egui::vec2(8.0, 8.0),
+        ))
+        .center();
+        p.circle_filled(dot_center, 4.0, dot_color);
+
+        let msg = match &self.ext_state {
+            crate::extension::ExtState::Outdated(ver) if !ver.is_empty() => {
+                if crate::extension::is_vi() {
+                    format!(
+                        "Tiện ích trình duyệt đang ở bản cũ ({ver}) — chưa bắt tải Zalo/PDF/Word."
+                    )
+                } else {
+                    format!(
+                        "Browser extension is outdated ({ver}) — update to catch Zalo/PDF/Word downloads."
+                    )
+                }
+            }
+            crate::extension::ExtState::Outdated(_) => crate::extension::bi(
+                "Tiện ích trình duyệt đang ở bản cũ — hãy cập nhật để bắt tải Zalo/PDF/Word.",
+                "Browser extension is outdated — update to catch Zalo/PDF/Word downloads.",
+            )
+            .to_owned(),
+            _ => crate::extension::bi(
+                "Chưa kết nối tiện ích trình duyệt — cài 1 lần (20 giây) để tự bắt mọi tải xuống.",
+                "Browser extension not connected — 1-time setup (20s) to catch all browser downloads.",
+            )
+            .to_owned(),
+        };
+        let text_right_limit = (o.x + btns[0].0 - 10.0).max(o.x + 40.0);
+        winui::fit(
+            ui,
+            &p,
+            o.x + 28.0,
+            winui::baseline_in(top, EXT_BANNER_H),
+            &msg,
+            winui::TEXT(),
+            text_right_limit,
+            "ext-banner-msg",
+        );
+        (EXT_BANNER_H, cmd)
     }
 
     /// The strip under the list: how many downloads are shown and selected, how many run and
-    /// how fast in all (beyond IDM, which has no status bar).
-    fn status_strip(&self, ui: &Ui, o: Pos2, w: f32, h: f32, shown: usize) {
+    /// how fast in all (beyond IDM, which has no status bar), plus a clickable browser extension
+    /// status indicator at the far right.
+    fn status_strip(&self, ui: &Ui, o: Pos2, w: f32, h: f32, shown: usize) -> Option<Cmd> {
         let p = ui.painter();
         let top = o.y + h - STRIP_H;
         // Centred in the band it reads as: the strip and the 5 px gap above it, under the panes.
@@ -1340,17 +1512,116 @@ impl App {
             baseline,
             &left,
             winui::MUTED(),
-            o.x + w / 2.0,
+            o.x + w * 0.36,
             "strip-left",
         );
-        if let Some(right) = self.activity() {
-            let color = if self.fdm_mode() {
-                winui::accent()
-            } else {
-                winui::MUTED()
-            };
-            winui::text_right(p, o.x + w - 10.0, baseline, &right, color);
+
+        let activity = self.activity();
+        let (pill_label, pill_color, pill_cmd) = match &self.ext_state {
+            crate::extension::ExtState::Connected => (
+                if activity.is_some() {
+                    format!(
+                        "\u{2714} {}",
+                        crate::extension::bi("Trình duyệt", "Browser")
+                    )
+                } else {
+                    format!(
+                        "\u{2714} {}",
+                        crate::extension::bi(
+                            "Tiện ích trình duyệt: Đã kết nối",
+                            "Browser extension: Connected"
+                        )
+                    )
+                },
+                winui::SUCCESS(),
+                Cmd::BrowserExtension,
+            ),
+            crate::extension::ExtState::Outdated(ver) => {
+                let text = if activity.is_some() {
+                    format!(
+                        "\u{25cf} {}",
+                        crate::extension::bi("Cập nhật tiện ích", "Update extension")
+                    )
+                } else if !ver.is_empty() {
+                    if crate::extension::is_vi() {
+                        format!("\u{25cf} Tiện ích cũ ({ver}) · Bấm cập nhật")
+                    } else {
+                        format!("\u{25cf} Outdated extension ({ver}) · Update")
+                    }
+                } else {
+                    format!(
+                        "\u{25cf} {}",
+                        crate::extension::bi(
+                            "Tiện ích cũ · Bấm cập nhật",
+                            "Outdated extension · Update"
+                        )
+                    )
+                };
+                (
+                    text,
+                    crate::extension::warn_color(),
+                    Cmd::BrowserExtensionDirect,
+                )
+            }
+            crate::extension::ExtState::Missing => (
+                if activity.is_some() {
+                    format!(
+                        "\u{25cf} {}",
+                        crate::extension::bi("Cài tiện ích", "Set up browser")
+                    )
+                } else {
+                    format!(
+                        "\u{25cf} {}",
+                        crate::extension::bi(
+                            "Chưa kết nối trình duyệt · Bấm để cài",
+                            "Browser not connected · Set up"
+                        )
+                    )
+                },
+                winui::accent(),
+                Cmd::BrowserExtensionDirect,
+            ),
+        };
+
+        let right_x = o.x + w - 10.0;
+        let (drawn, cut) = winui::text_right_within(
+            p,
+            right_x,
+            baseline,
+            &pill_label,
+            pill_color,
+            o.x + w * 0.55,
+        );
+        let hit = drawn.expand2(egui::vec2(4.0, 2.0));
+        let resp = ui.interact(hit, egui::Id::unique("strip-ext"), winui::pointer_only());
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            p.line_segment(
+                [
+                    pos2(drawn.left(), drawn.bottom() + 1.0),
+                    pos2(drawn.right(), drawn.bottom() + 1.0),
+                ],
+                egui::Stroke::new(1.0, pill_color),
+            );
         }
+        let resp = if cut {
+            resp.on_hover_text(&pill_label)
+        } else {
+            resp
+        };
+
+        if let Some(act) = activity {
+            let act_right = right_x - drawn.width() - 16.0;
+            if act_right > o.x + w * 0.36 + 30.0 {
+                let color = if self.fdm_mode() {
+                    winui::accent()
+                } else {
+                    winui::MUTED()
+                };
+                winui::text_right_within(p, act_right, baseline, &act, color, o.x + w * 0.36);
+            }
+        }
+        resp.clicked().then_some(pill_cmd)
     }
 
     fn fdm_mode(&self) -> bool {
@@ -5481,6 +5752,14 @@ impl App {
                     dialogs::raise(ctx, dialogs::dialog_viewport("extension"));
                 }
             }
+            Cmd::BrowserExtensionDirect => {
+                if self.chromium_steps.is_none() {
+                    self.chromium_steps =
+                        Some(crate::extension::ChromiumSteps::for_primary_chromium());
+                } else {
+                    dialogs::raise(ctx, dialogs::dialog_viewport("chromium-steps"));
+                }
+            }
             Cmd::HelpPage(page) => crate::help::open_page(page),
             Cmd::Shortcuts => self.shortcuts = Some(crate::help::Shortcuts),
             Cmd::ReportProblem => crate::help::report_problem(),
@@ -6943,6 +7222,12 @@ impl App {
             None => {}
         }
 
+        let (banner_h, banner_cmd) = self.ext_banner(ui, o, w);
+        if let Some(cmd) = banner_cmd {
+            chosen = Some((cmd, None));
+        }
+        let o_panes = o + egui::vec2(0.0, banner_h);
+
         // Categories pane.
         let list_left = if self.show_categories {
             let rows = self.tree_rows();
@@ -6952,7 +7237,7 @@ impl App {
             let cat_w = (self.settings.categories_width as f32).clamp(100.0, max_w);
             let right = o.x + 6.0 + cat_w;
             let split = winui::rect(egui::Rect::from_min_max(
-                pos2(right, o.y + chrome::MENU_H + chrome::pane_top()),
+                pos2(right, o_panes.y + chrome::MENU_H + chrome::pane_top()),
                 pos2(right + 4.0, o.y + h - STRIP_H - 5.0),
             ));
             let sr = ui.interact(
@@ -7028,7 +7313,7 @@ impl App {
             if let Some(ev) = chrome::categories(
                 ui,
                 &mut self.icons,
-                o,
+                o_panes,
                 o.y + h - STRIP_H,
                 right,
                 &tree,
@@ -7066,7 +7351,10 @@ impl App {
         self.selection.retain(&ids);
         let (selected, focus) = self.selection.rows(&ids);
         let outer = egui::Rect::from_min_max(
-            pos2(o.x + list_left, o.y + chrome::MENU_H + chrome::pane_top()),
+            pos2(
+                o.x + list_left,
+                o_panes.y + chrome::MENU_H + chrome::pane_top(),
+            ),
             pos2(o.x + w - 7.0, o.y + h - STRIP_H - 4.0),
         );
         self.list.menu_open = self.popup.is_some() || self.open_menu.is_some();
@@ -7154,7 +7442,9 @@ impl App {
         {
             chosen = Some((cmd, None));
         }
-        self.status_strip(ui, o, w, h, ids.len());
+        if let Some(cmd) = self.status_strip(ui, o, w, h, ids.len()) {
+            chosen = Some((cmd, None));
+        }
         if let Some((i, pos)) = r.context {
             self.open_popup(Popup::Item(i.map(|i| ids[i])), pos);
         }
@@ -8158,7 +8448,9 @@ impl App {
         {
             self.shown_existing = None;
         }
-        // Then the browser extension, once per start until a browser has it (extension.rs).
+        // Then the browser extension, once per start until a current fork extension (>= 0.5.8)
+        // has connected (extension.rs). On Chromium-only machines (e.g. Chrome/Edge), jump
+        // straight to the 4-step guide so new users start right away.
         if self.lang_picker.is_none()
             && self.helpers.is_none()
             && self.settings.language_asked
@@ -8166,7 +8458,30 @@ impl App {
         {
             self.extension_weighed = true;
             if crate::extension::worth_asking(&self.settings) {
-                self.extension = Some(crate::extension::Extension::new());
+                if let Some(steps) = crate::extension::ChromiumSteps::for_chromium_only_system() {
+                    self.chromium_steps = Some(steps);
+                } else {
+                    self.extension = Some(crate::extension::Extension::new());
+                }
+            }
+        }
+        if let Some(d) = &mut self.chromium_steps {
+            match d.show(ctx) {
+                Outcome::Open => {}
+                Outcome::Done(crate::extension::ChromiumStepAction::SwitchBrowser) => {
+                    self.chromium_steps = None;
+                    if self.extension.is_none() {
+                        self.extension = Some(crate::extension::Extension::new());
+                    } else {
+                        dialogs::raise(ctx, dialogs::dialog_viewport("extension"));
+                    }
+                }
+                Outcome::Done(crate::extension::ChromiumStepAction::NeverAsk) => {
+                    self.chromium_steps = None;
+                    self.settings.extension_never_ask = true;
+                    self.dirty = true;
+                }
+                Outcome::Closed => self.chromium_steps = None,
             }
         }
         if let Some(d) = &mut self.extension {

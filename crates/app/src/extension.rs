@@ -25,12 +25,105 @@ const ROW: f32 = 34.0;
 /// Safari's row (macOS), as Options and the native host name it.
 const SAFARI: &str = "Apple Safari";
 
-fn is_vi() -> bool {
+/// Minimum extension version that includes the fork's catch-all capture, Zalo `blob:` support,
+/// and dedicated fork ID. Earlier versions (such as upstream 0.5.2) are treated as outdated.
+pub const MIN_FORK_EXT_VERSION: (u32, u32, u32) = (0, 5, 8);
+
+/// Connection state of the browser extension seen by the native messaging host.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExtState {
+    /// At least one browser connected with an up-to-date fork extension (`>= 0.5.8`).
+    Connected,
+    /// Only older extension version(s) have connected (holds the highest seen version string).
+    Outdated(String),
+    /// No browser extension has connected yet.
+    Missing,
+}
+
+pub fn is_vi() -> bool {
     crate::i18n::code().starts_with("vi")
 }
 
-fn bi<'a>(vi: &'a str, en: &'a str) -> &'a str {
+pub fn bi<'a>(vi: &'a str, en: &'a str) -> &'a str {
     if is_vi() { vi } else { en }
+}
+
+/// High-contrast amber warning color adapted to light and dark surfaces.
+pub fn warn_color() -> egui::Color32 {
+    if crate::theme::dark_surface() {
+        egui::Color32::from_rgb(245, 158, 11)
+    } else {
+        egui::Color32::from_rgb(180, 83, 9)
+    }
+}
+
+fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
+    let v = v.trim().strip_prefix('v').unwrap_or(v.trim());
+    let mut parts = v.split('.');
+    let maj = parts.next()?.parse().ok()?;
+    let min = parts.next()?.parse().ok()?;
+    let patch_raw = parts.next().unwrap_or("0");
+    let patch_digits: String = patch_raw
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    let patch = if patch_digits.is_empty() {
+        0
+    } else {
+        patch_digits.parse().ok()?
+    };
+    Some((maj, min, patch))
+}
+
+pub fn version_at_least(v: &str, min: (u32, u32, u32)) -> bool {
+    parse_semver(v).is_some_and(|parsed| parsed >= min)
+}
+
+pub fn state_from_seen(seen: &[(String, String)]) -> ExtState {
+    if seen.is_empty() {
+        return ExtState::Missing;
+    }
+    if seen
+        .iter()
+        .any(|(_, v)| version_at_least(v, MIN_FORK_EXT_VERSION))
+    {
+        return ExtState::Connected;
+    }
+    let best = seen
+        .iter()
+        .filter(|(_, v)| !v.trim().is_empty())
+        .max_by_key(|(_, v)| parse_semver(v))
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    ExtState::Outdated(best)
+}
+
+/// Current browser extension status read from the native host's `extension-seen` file.
+pub fn state() -> ExtState {
+    state_from_seen(&mdm_ipc::extension::seen_browsers())
+}
+
+fn detected_browsers() -> Vec<(String, Option<PathBuf>)> {
+    #[cfg(windows)]
+    let found = crate::win32::browsers();
+    #[cfg(unix)]
+    let found = crate::unix::browsers();
+    let mut browsers: Vec<_> = found.into_iter().map(|(n, p)| (n, Some(p))).collect();
+    // The table's order (Chrome first, its button the accent one), others after.
+    browsers.sort_by_key(|(n, _)| {
+        mdm_ipc::browsers::BROWSERS
+            .iter()
+            .position(|b| b.name == n.as_str())
+            .unwrap_or(usize::MAX)
+    });
+    // Safari comes with the app (macOS only): a row of its own, after the others.
+    if safari_here() {
+        browsers.push((SAFARI.to_owned(), None));
+    }
+    if browsers.is_empty() {
+        browsers.push((String::new(), None));
+    }
+    browsers
 }
 
 /// Help menu label for the in-app quick usage guide.
@@ -86,12 +179,13 @@ fn open_browser(program: &std::path::Path, url: &str) {
 }
 
 /// Whether to offer the extension at this start: browser integration on and registered (not a
-/// portable copy, which registers nothing), no browser's extension seen yet, not refused.
+/// portable copy, which registers nothing), no current fork extension (`>= 0.5.8`) seen yet,
+/// not refused.
 pub fn worth_asking(settings: &crate::settings::Settings) -> bool {
     !settings.extension_never_ask
         && settings.advanced_integration
         && mdm_ipc::portable_dir().is_none()
-        && !mdm_ipc::extension::seen()
+        && state() != ExtState::Connected
 }
 
 pub struct Extension {
@@ -139,28 +233,9 @@ enum OpenSteps {
 
 impl Extension {
     pub fn new() -> Self {
-        #[cfg(windows)]
-        let found = crate::win32::browsers();
-        #[cfg(unix)]
-        let found = crate::unix::browsers();
-        let mut browsers: Vec<_> = found.into_iter().map(|(n, p)| (n, Some(p))).collect();
-        // The table's order (Chrome first, its button the accent one), others after.
-        browsers.sort_by_key(|(n, _)| {
-            mdm_ipc::browsers::BROWSERS
-                .iter()
-                .position(|b| b.name == n.as_str())
-                .unwrap_or(usize::MAX)
-        });
-        // Safari comes with the app (macOS only): a row of its own, after the others.
-        if safari_here() {
-            browsers.push((SAFARI.to_owned(), None));
-        }
-        if browsers.is_empty() {
-            browsers.push((String::new(), None));
-        }
         Extension {
-            browsers,
-            connected: mdm_ipc::extension::seen(),
+            browsers: detected_browsers(),
+            connected: state() == ExtState::Connected,
             seen: seen_names(),
             registered: registered(),
             looked: std::time::Instant::now(),
@@ -178,7 +253,7 @@ impl Extension {
     /// The Chromium steps, open at once (`/show chromium-steps`).
     pub fn open_chromium_steps(&mut self) {
         let (name, program) = self.first_chromium_browser();
-        self.chromium_steps = Some(ChromiumSteps::new(name, program));
+        self.chromium_steps = Some(ChromiumSteps::new(name, program, false));
     }
 
     fn first_chromium_browser(&self) -> (String, Option<PathBuf>) {
@@ -196,7 +271,7 @@ impl Extension {
         if self.looked.elapsed() >= Duration::from_secs(1) || set_up_finished(&mut self.set_up_seen)
         {
             self.looked = std::time::Instant::now();
-            self.connected = mdm_ipc::extension::seen();
+            self.connected = state() == ExtState::Connected;
             self.seen = seen_names();
             self.registered = registered();
         }
@@ -238,7 +313,7 @@ impl Extension {
                 if self.chromium_steps.is_some() {
                     crate::dialogs::raise(ctx, crate::dialogs::dialog_viewport("chromium-steps"));
                 }
-                self.chromium_steps = Some(ChromiumSteps::new(name, program));
+                self.chromium_steps = Some(ChromiumSteps::new(name, program, false));
             }
             _ => {}
         }
@@ -586,31 +661,68 @@ const STEPS: [&str; 8] = [
     "Turn on \"Mister Download Manager\" and allow it on all websites.",
 ];
 
+/// Action returned when `ChromiumSteps` closes with a follow-up request.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ChromiumStepAction {
+    /// Open the full browser picker so the user can choose a different browser (Edge, Firefox…).
+    SwitchBrowser,
+    /// User clicked "Don't ask again" on the standalone startup wizard.
+    NeverAsk,
+}
+
 /// In-app step-by-step setup guide for loading the fork's bundled Chromium extension once,
 /// with 1-click Copy / Open buttons and live connection detection.
 pub struct ChromiumSteps {
     browser: String,
     program: Option<PathBuf>,
+    standalone: bool,
     copied: Option<(String, std::time::Instant)>,
-    connected: bool,
+    ext_state: ExtState,
     looked: std::time::Instant,
 }
 
 impl ChromiumSteps {
-    pub fn new(browser: String, program: Option<PathBuf>) -> Self {
+    pub fn new(browser: String, program: Option<PathBuf>, standalone: bool) -> Self {
         Self {
             browser,
             program,
+            standalone,
             copied: None,
-            connected: mdm_ipc::extension::seen(),
+            ext_state: state(),
             looked: std::time::Instant::now(),
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context) -> Outcome<()> {
+    /// Open directly for the primary installed Chromium browser (e.g. from the main-window
+    /// banner or status bar).
+    pub fn for_primary_chromium() -> Self {
+        let browsers = detected_browsers();
+        let (name, program) = browsers
+            .into_iter()
+            .find(|(n, _)| n != SAFARI && !is_gecko(n))
+            .unwrap_or_else(|| ("Google Chrome".to_owned(), None));
+        Self::new(name, program, true)
+    }
+
+    /// On first launch / post-installer: jump straight to the 4-step guide when this computer
+    /// only has Chromium-family browsers (no Firefox/Gecko and no Safari).
+    pub fn for_chromium_only_system() -> Option<Self> {
+        let browsers = detected_browsers();
+        let has_non_chromium = browsers.iter().any(|(n, _)| n == SAFARI || is_gecko(n));
+        if has_non_chromium {
+            return None;
+        }
+        let (name, program) = browsers
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| ("Google Chrome".to_owned(), None));
+        Some(Self::new(name, program, true))
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome<ChromiumStepAction> {
         if self.looked.elapsed() >= Duration::from_secs(1) {
             self.looked = std::time::Instant::now();
-            self.connected = mdm_ipc::extension::seen();
+            self.ext_state = state();
         }
         if self
             .copied
@@ -634,7 +746,9 @@ impl ChromiumSteps {
         };
         let (existing_dir, folder_str) = chromium_extension_location();
         let program = self.program.clone();
-        let connected = self.connected;
+        let standalone = self.standalone;
+        let ext_state = self.ext_state.clone();
+        let connected = ext_state == ExtState::Connected;
         let copied_msg = self.copied.as_ref().map(|(m, _)| m.clone());
         let mut new_copied: Option<String> = None;
 
@@ -667,6 +781,40 @@ impl ChromiumSteps {
                 let o = o + egui::vec2(0.0, b_extra);
                 let (ink, muted) = (winui::TEXT(), winui::MUTED());
                 let mut y = BANNER + 16.0;
+
+                // When an older upstream extension (e.g. 0.5.2) was previously seen, remind the
+                // user to remove it in chrome://extensions before loading the new folder.
+                if let ExtState::Outdated(ver) = &ext_state {
+                    let note = if is_vi() {
+                        if ver.is_empty() {
+                            format!(
+                                "Lưu ý: phát hiện tiện ích bản cũ — hãy bấm \"Xóa\" (Remove) bản cũ trong {url} trước khi nạp bản mới để tránh trùng 2 biểu tượng."
+                            )
+                        } else {
+                            format!(
+                                "Lưu ý: phát hiện tiện ích bản cũ ({ver}) — hãy bấm \"Xóa\" (Remove) bản cũ trong {url} trước khi nạp bản mới để tránh trùng 2 biểu tượng."
+                            )
+                        }
+                    } else if ver.is_empty() {
+                        format!(
+                            "Note: an older extension was detected — click Remove on it in {url} before loading the new folder to avoid duplicate icons."
+                        )
+                    } else {
+                        format!(
+                            "Note: older extension ({ver}) detected — click Remove on it in {url} before loading the new folder to avoid duplicate icons."
+                        )
+                    };
+                    let lines = winui::paragraph(
+                        &p,
+                        o.x + 20.0,
+                        o.y + y + 12.0,
+                        &note,
+                        warn_color(),
+                        o.x + W_GUIDE - 20.0,
+                        14.0,
+                    );
+                    y += 14.0 * lines.max(1) as f32 + 10.0;
+                }
 
                 // Step 1: open browser extensions page.
                 winui::text_font(
@@ -964,16 +1112,47 @@ impl ChromiumSteps {
                     o.y + total_h - 46.0 - b_extra,
                     W_GUIDE - 32.0,
                 );
-                let placed =
-                    winui::buttons_to_right(&p, W_GUIDE - 18.0, 8.0, &[("Close", 90.0)], 200.0);
+                let btn_y = total_h - 36.0 - b_extra;
+                if standalone
+                    && winui::link(
+                        ui,
+                        &p,
+                        o.x + 18.0,
+                        o.y + btn_y + 17.0,
+                        bi("Chọn trình duyệt khác...", "Other browsers..."),
+                        "switch-browser",
+                    )
+                {
+                    return Outcome::Done(ChromiumStepAction::SwitchBrowser);
+                }
+                let row: Vec<(&str, f32)> = if standalone && !connected {
+                    vec![("Don't ask again", 130.0), ("Close", 90.0)]
+                } else {
+                    vec![("Close", 90.0)]
+                };
+                let placed = winui::buttons_to_right(&p, W_GUIDE - 18.0, 8.0, &row, 200.0);
+                let close_at = placed[placed.len() - 1];
                 let close = winui::button(
                     ui,
-                    r(o, placed[0].0, total_h - 36.0 - b_extra, placed[0].1, 25.0),
+                    r(o, close_at.0, btn_y, close_at.1, 25.0),
                     "Close",
                     ButtonKind::Default,
                     false,
                     None,
                 );
+                if standalone && !connected {
+                    let never = winui::button(
+                        ui,
+                        r(o, placed[0].0, btn_y, placed[0].1, 25.0),
+                        "Don't ask again",
+                        ButtonKind::Normal,
+                        false,
+                        None,
+                    );
+                    if never.clicked() {
+                        return Outcome::Done(ChromiumStepAction::NeverAsk);
+                    }
+                }
                 if close.clicked() || winui::enter_pressed(ui) || winui::escape_pressed(ui) {
                     Outcome::Closed
                 } else {
@@ -1123,10 +1302,11 @@ impl UsageGuide {
     }
 }
 
-/// The browsers whose extension reached the app, by Options' names.
+/// The browsers whose current fork extension (`>= 0.5.8`) reached the app, by Options' names.
 fn seen_names() -> Vec<String> {
     mdm_ipc::extension::seen_browsers()
         .into_iter()
+        .filter(|(_, v)| version_at_least(v, MIN_FORK_EXT_VERSION))
         .map(|(b, _)| b)
         .collect()
 }
@@ -1384,5 +1564,38 @@ mod tests {
             assert!(!vi_h.is_empty() && !en_h.is_empty());
             assert!(!vi_b.is_empty() && !en_b.is_empty());
         }
+    }
+
+    #[test]
+    fn ext_state_flags_missing_outdated_and_connected() {
+        assert_eq!(state_from_seen(&[]), ExtState::Missing);
+        assert_eq!(
+            state_from_seen(&[("Google Chrome".into(), "0.5.2".into())]),
+            ExtState::Outdated("0.5.2".into())
+        );
+        assert_eq!(
+            state_from_seen(&[
+                ("Google Chrome".into(), "0.5.2".into()),
+                ("Microsoft Edge".into(), "0.5.7".into()),
+            ]),
+            ExtState::Outdated("0.5.7".into())
+        );
+        assert_eq!(
+            state_from_seen(&[
+                ("Google Chrome".into(), "0.5.2".into()),
+                ("Google Chrome".into(), "0.5.8".into()),
+            ]),
+            ExtState::Connected
+        );
+        assert_eq!(
+            state_from_seen(&[("Google Chrome".into(), "0.5.9".into())]),
+            ExtState::Connected
+        );
+        assert!(version_at_least("0.5.8", MIN_FORK_EXT_VERSION));
+        assert!(version_at_least("0.5.9", MIN_FORK_EXT_VERSION));
+        assert!(version_at_least("1.0.0", MIN_FORK_EXT_VERSION));
+        assert!(!version_at_least("0.5.2", MIN_FORK_EXT_VERSION));
+        assert!(!version_at_least("0.5.7", MIN_FORK_EXT_VERSION));
+        assert!(!version_at_least("", MIN_FORK_EXT_VERSION));
     }
 }

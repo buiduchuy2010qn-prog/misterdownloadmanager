@@ -5,6 +5,21 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-11-19
+
+### Added
+
+- **Main-window Browser Extension Setup Banner & Status Bar Indicator:**
+  - Displays a slim setup banner right below the toolbar whenever no current fork extension (`>= 0.5.8`) is connected (with 1-click **Connect now** / **Update extension**, **Guide**, and session-dismiss **`×`**). Auto-hides the moment the extension connects.
+  - Displays a permanent clickable browser-extension status indicator on the bottom-right of the status bar (shows **Connected**, **Outdated (`0.5.2`) · Update**, or **Not connected · Set up**, cleanly beside active download speed).
+  - Adds a secondary **Usage guide** link in the empty download list for first-time users.
+- **Direct 4-step setup wizard after installation:**
+  - On Chromium-only machines (e.g., Chrome/Edge/Brave), first launch after running the installer opens straight into the interactive 4-step Chromium extension guide (with a **Other browsers...** link to switch browsers anytime).
+
+### Fixed
+
+- **Detect outdated upstream `0.5.2` extensions:** Upgrades from older versions where `extension-seen` still records upstream `0.5.2` are now flagged as outdated (`ExtState::Outdated`) instead of falsely showing "Connected", automatically prompting users to remove the old `0.5.2` copy and load the bundled fork extension.
+
 ## [0.5.8] - 2026-11-19
 
 ### Added
