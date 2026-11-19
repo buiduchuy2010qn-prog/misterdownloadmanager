@@ -148,7 +148,7 @@ struct Notice {
     name: String,
 }
 
-#[derive(Default, Serialize)]
+#[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Reply {
     ok: bool,
