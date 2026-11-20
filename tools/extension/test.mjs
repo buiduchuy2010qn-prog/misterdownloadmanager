@@ -639,7 +639,65 @@ const ok = (what) => {
   assert.equal(imported[2].importLocal, "C:\\Users\\test\\Downloads\\gemini_video.mp4");
   assert.equal(imported[2].filename, "gemini_video.mp4");
   assert.ok(gemini.calls.some((c) => c[0] === "erase" && c[1] === 912), "erased from browser shelf");
-  ok("catch-all *, Zalo blob:, data:, Gemini blob:null adoption, and no Chromium proxy conflict");
+
+  // 6) Telegram Web Service Worker synthetic stream (`https://web.telegram.org/k/d/...`): must NOT
+  // be sent as an HTTP download (origin returns 302 Found), must survive MV3 worker sleep via
+  // storage, and be adopted via importLocal once Chrome's Service Worker finishes saving it.
+  const tgSession = {};
+  const tg = fakeApi({
+    firefox: false,
+    types: "*",
+    nativePort: true,
+    session: tgSession,
+    searchItem: {
+      state: "complete",
+      filename: "D:\\Apps\\Locket_SINHVIENAI_Admin.ipa",
+      fileSize: 93739390,
+      mime: "application/octet-stream",
+    },
+  });
+  load(tg.api, false);
+  await settle();
+  let tgSuggested = false;
+  tg.listeners.determining(
+    {
+      id: 913,
+      url: "https://web.telegram.org/k/d/1518155571",
+      filename: "Locket_SINHVIENAI_Admin.ipa",
+      referrer: "https://web.telegram.org/k/",
+      mime: "application/octet-stream",
+      totalBytes: 93739390,
+    },
+    () => (tgSuggested = true),
+  );
+  await settle();
+  assert.ok(tgSuggested, "Telegram Web SW stream left to browser via suggest()");
+  assert.ok(!tg.calls.some((c) => c[0] === "cancel"), "Telegram Web SW stream must not be cancelled");
+  assert.ok(!tg.calls.some((c) => c[0] === "native" && c[2].url && !c[2].importLocal), "Telegram Web SW stream must not be offered as HTTP");
+  assert.ok(tgSession.pendingAdopts && tgSession.pendingAdopts["913"], "pending adoption persisted to session storage");
+  // Simulate MV3 background service worker restart before download completes.
+  const tgRestarted = fakeApi({
+    firefox: false,
+    types: "*",
+    nativePort: true,
+    session: tgSession,
+    searchItem: {
+      state: "complete",
+      filename: "D:\\Apps\\Locket_SINHVIENAI_Admin.ipa",
+      fileSize: 93739390,
+      mime: "application/octet-stream",
+    },
+  });
+  load(tgRestarted.api, false);
+  await settle();
+  tgRestarted.listeners.downloadChanged({ id: 913, state: { current: "complete" } });
+  await settle();
+  const tgImported = tgRestarted.calls.find((c) => c[0] === "native" && c[2].importLocal);
+  assert.ok(tgImported, "Telegram Web SW download adopted after MV3 worker restart");
+  assert.equal(tgImported[2].importLocal, "D:\\Apps\\Locket_SINHVIENAI_Admin.ipa");
+  assert.equal(tgImported[2].filename, "Locket_SINHVIENAI_Admin.ipa");
+  assert.ok(tgRestarted.calls.some((c) => c[0] === "erase" && c[1] === 913), "erased from browser shelf after adoption");
+  ok("catch-all *, Zalo blob:, data:, Gemini blob:null, Telegram Web SW adoption, and no Chromium proxy conflict");
 }
 
 // Paused from the toolbar button: nothing is taken until it is on again.

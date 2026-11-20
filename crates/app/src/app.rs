@@ -2846,7 +2846,11 @@ impl App {
                 url::Url::parse("https://browser.local/").expect("static fallback URL")
             });
 
-        if self.settings.show_start_dialog && !cmd.silent && !cmd.later {
+        // Only prompt with IDM's "Download File Info" dialog for staged transfers (`import_move`)
+        // whose browser download was cancelled (e.g. Zalo Web `blob:` / `data:`): files adopted
+        // after the browser already finished saving them (`!import_move`, e.g. Telegram Web
+        // Service Worker streams or Gemini `blob:null`) already have their final location.
+        if cmd.import_move && self.settings.show_start_dialog && !cmd.silent && !cmd.later {
             cmd.name = Some(name);
             cmd.size = Some(file_size);
             self.open_file_info(dialogs::NewUrl { url, login: None }, cmd, ctx);
@@ -2915,28 +2919,35 @@ impl App {
             };
             (dest, category, description)
         } else {
-            let raw_name = cmd
-                .name
-                .clone()
-                .filter(|n| !n.trim().is_empty())
-                .or_else(|| src.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .unwrap_or_else(|| "download".to_owned());
+            let raw_name = if !import_move {
+                src.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .filter(|n| !n.trim().is_empty())
+                    .or_else(|| cmd.name.clone().filter(|n| !n.trim().is_empty()))
+            } else {
+                cmd.name
+                    .clone()
+                    .filter(|n| !n.trim().is_empty())
+                    .or_else(|| src.file_name().map(|n| n.to_string_lossy().into_owned()))
+            }
+            .unwrap_or_else(|| "download".to_owned());
             let name = mdm_engine::naming::sanitize(&raw_name);
             let category = cmd
                 .category
                 .as_deref()
                 .and_then(|k| Category::all().into_iter().find(|c| c.key() == k))
                 .unwrap_or_else(|| Category::of(&name));
-            let dir = cmd
-                .dir
-                .clone()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| self.settings.category_dir(category, &self.downloads));
-            let _ = std::fs::create_dir_all(&dir);
-            let in_target_dir = src.parent().is_some_and(|p| same_path(p, &dir));
-            let dest = if !import_move && in_target_dir {
+            let dest = if !import_move {
+                // Already saved by the browser (e.g. Telegram Web Service Worker stream, Gemini
+                // `blob:null`, or >25 MB blob): keep it right where the browser/user placed it.
                 src
             } else {
+                let dir = cmd
+                    .dir
+                    .clone()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| self.settings.category_dir(category, &self.downloads));
+                let _ = std::fs::create_dir_all(&dir);
                 let target = mdm_engine::naming::destination(&dir, &name);
                 let moved = std::fs::rename(&src, &target).or_else(|_| {
                     std::fs::copy(&src, &target).map(|_| {
@@ -2951,11 +2962,8 @@ impl App {
                             src.display(),
                             target.display()
                         );
-                        if import_move {
-                            let _ = std::fs::remove_file(&src);
-                            return;
-                        }
-                        src
+                        let _ = std::fs::remove_file(&src);
+                        return;
                     }
                 }
             };

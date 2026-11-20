@@ -358,6 +358,23 @@ fn answer(m: Message, rules: &mdm_ipc::capture::CaptureRules) -> Reply {
     if !downloadable(&m.url) {
         return Reply::failed("refused", "not an http(s) or ftp(s) URL");
     }
+    if !m.explicit
+        && (is_service_worker_url(&m.url)
+            || m.final_url.as_deref().is_some_and(is_service_worker_url))
+    {
+        let site = mdm_ipc::capture::host_of(&m.url);
+        log_left(
+            browser,
+            &site,
+            &file_name_of(&m),
+            "browser service-worker stream (cannot be fetched externally)",
+            m.private,
+        );
+        return Reply::failed(
+            "refused",
+            "browser service-worker stream cannot be fetched externally",
+        );
+    }
     if let Err(why) = verdict(&m, rules) {
         let site = mdm_ipc::capture::host_of(&m.url);
         log_left(browser, &site, &file_name_of(&m), why.reason(), m.private);
@@ -1372,6 +1389,68 @@ fn downloadable(url: &str) -> bool {
         .any(|k| scheme.eq_ignore_ascii_case(k))
 }
 
+/// Synthetic `https://` download URLs served only by an in-browser Service Worker (Telegram Web
+/// MTProto decryption streams, Proton Drive E2E streams, StreamSaver.js virtual streams). The
+/// origin HTTP server has no such file (returning 302/404 to any external HTTP client), so these
+/// must stay with the browser (and, on the fork extension, be adopted via `importLocal`).
+fn is_service_worker_url(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("https") && !scheme.eq_ignore_ascii_case("http") {
+        return false;
+    }
+    let Some((authority, path_and_query)) = rest.find('/').map(|i| (&rest[..i], &rest[i..])) else {
+        return false;
+    };
+    let host = authority
+        .rsplit('@')
+        .next()
+        .unwrap_or(authority)
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let path = path_and_query
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let is_telegram_web = matches!(
+        host.as_str(),
+        "web.telegram.org" | "webk.telegram.org" | "weba.telegram.org" | "webz.telegram.org"
+    ) || host.ends_with(".web.telegram.org");
+    if is_telegram_web {
+        let sub = path
+            .strip_prefix("/k/")
+            .or_else(|| path.strip_prefix("/a/"))
+            .or_else(|| path.strip_prefix("/z/"))
+            .or_else(|| path.strip_prefix('/'))
+            .unwrap_or("");
+        return sub.starts_with("d/")
+            || sub.starts_with("download/")
+            || sub.starts_with("stream/")
+            || sub.starts_with("progressive/");
+    }
+    let is_proton = host.ends_with(".proton.me") || host.ends_with(".protonmail.com");
+    if is_proton && (path.starts_with("/sw/") || path.starts_with("/download/sw/")) {
+        return true;
+    }
+    if path.contains("/sw-stream/") || path.contains("/__download__/") {
+        return true;
+    }
+    if host == "jimmywarting.github.io"
+        && path.starts_with("/streamsaver.js/")
+        && !path.ends_with(".html")
+        && !path.ends_with(".js")
+        && !path.ends_with(".css")
+        && !path.ends_with(".map")
+    {
+        return true;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1920,5 +1999,48 @@ mod tests {
         assert!(p2.exists());
         assert!(store.cancel(&id2).ok);
         assert!(!p2.exists());
+    }
+
+    #[test]
+    fn service_worker_streams_stay_with_the_browser() {
+        for sw in [
+            "https://web.telegram.org/k/d/1518155571",
+            "https://web.telegram.org/k/stream/%7B%22dcId%22%3A5%7D",
+            "https://web.telegram.org/k/progressive/123",
+            "https://web.telegram.org/a/download/999",
+            "https://web.telegram.org/z/download/42",
+            "https://webk.telegram.org/d/555",
+            "https://drive.proton.me/sw/abc/report.pdf",
+            "https://example.org/sw-stream/123/archive.zip",
+            "https://send.example.org/__download__/abc",
+            "https://jimmywarting.github.io/StreamSaver.js/12345/out.zip",
+        ] {
+            assert!(is_service_worker_url(sw), "expected SW stream: {sw}");
+        }
+        for normal in [
+            "https://telegram.org/dl/desktop/win64",
+            "https://updates.tdesktop.com/tx64/tsetup-x64.5.0.0.exe",
+            "https://web.telegram.org/k/assets/index.wasm",
+            "https://proton.me/download/ProtonVPN_v3.exe",
+            "https://jimmywarting.github.io/StreamSaver.js/mitm.html",
+            "https://example.com/files/Locket_SINHVIENAI_Admin.ipa",
+        ] {
+            assert!(
+                !is_service_worker_url(normal),
+                "expected normal HTTP: {normal}"
+            );
+        }
+        let rules = mdm_ipc::capture::CaptureRules::default();
+        let m: Message = serde_json::from_str(
+            r#"{"url":"https://web.telegram.org/k/d/1518155571","filename":"Locket_SINHVIENAI_Admin.ipa","size":93739390,"userAgent":"Mozilla/5.0 Chrome/141.0.0.0 Safari/537.36"}"#,
+        )
+        .unwrap();
+        let r = answer(m, &rules);
+        assert!(
+            !r.ok,
+            "SW stream must be refused so the browser finishes it"
+        );
+        assert_eq!(r.why, Some("refused"));
+        assert_eq!(r.declined, None);
     }
 }

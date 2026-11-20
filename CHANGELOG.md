@@ -5,6 +5,17 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ## [Unreleased]
 
+## [0.5.13] - 2026-11-20
+
+### Fixed
+
+- **Telegram Web & browser Service Worker downloads no longer fail with `302 Found`:**
+  - Telegram Web K/A/Z (`web.telegram.org/k/d/...`, `/k/stream/...`, `/a/download/...`, `/z/download/...`), Proton Drive (`/sw/...`), and StreamSaver.js decrypt and stream files inside the browser's Service Worker — the origin HTTP server has no downloadable file at those URLs and replies `302 Found` / `404` to external HTTP clients.
+  - Both the native host (`nmhost`, covering Chrome Web Store and older extension copies immediately after OTA) and the fork browser extension now recognize Service Worker synthetic download URLs and let the browser decrypt and stream them cleanly instead of failing in HTTP.
+  - The fork browser extension persists pending adoptions across MV3 service-worker sleep (1-hour TTL) and adopts the finished file straight into Mister Download Manager's list (`importLocal`) once the browser finishes saving it.
+- **No double Save dialog or silent move for browser-adopted files:**
+  - Files already saved to disk by the browser (`!import_move`, such as Telegram Web Service Worker streams, Gemini `blob:null`, or >25 MB blobs) now stay right where the browser/user saved them and are recorded directly as completed without popping up a redundant second *Download File Info* dialog (while Zalo Web / ChatGPT staged `blob:`/`data:` files still open IDM's folder picker dialog as expected).
+
 ## [0.5.12] - 2026-11-19
 
 ### Fixed

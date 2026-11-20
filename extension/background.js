@@ -1303,6 +1303,42 @@ function blobOrigin(url, referrer) {
   return "";
 }
 
+// Synthetic `https://` download URLs served only by an in-browser Service Worker (Telegram Web
+// MTProto decryption streams, Proton Drive E2E streams, StreamSaver.js virtual streams). The
+// origin HTTP server has no such file (returning 302/404 to any external HTTP client), so the
+// browser must decrypt and save them first, after which MDM adopts the completed file.
+function isServiceWorkerUrl(url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return false;
+  const host = u.hostname.toLowerCase();
+  const path = u.pathname.toLowerCase();
+  const isTelegramWeb =
+    host === "web.telegram.org" ||
+    host === "webk.telegram.org" ||
+    host === "weba.telegram.org" ||
+    host === "webz.telegram.org" ||
+    host.endsWith(".web.telegram.org");
+  if (isTelegramWeb) {
+    return /^\/(?:[kaz]\/)?(?:d|download|stream|progressive)\//.test(path);
+  }
+  const isProton = host.endsWith(".proton.me") || host.endsWith(".protonmail.com");
+  if (isProton && (path.startsWith("/sw/") || path.startsWith("/download/sw/"))) {
+    return true;
+  }
+  if (path.includes("/sw-stream/") || path.includes("/__download__/")) {
+    return true;
+  }
+  if (host === "jimmywarting.github.io" && path.startsWith("/streamsaver.js/") && !/\.(?:html|js|css|map)$/.test(path)) {
+    return true;
+  }
+  return false;
+}
+
 // The file name to offer the app the download under (`{name, kind, origin}`), or why Options
 // leave it to the browser (`{left, name}`), or null: the browser keeps it and there is nothing to
 // say (unsupported scheme, paused, Alt held, a form that can't be posted again, MDM not reached).
@@ -1342,8 +1378,9 @@ async function candidate(item, url) {
   // Smaller than Options' minimum (when the browser knows the size already).
   const size = item.totalBytes > 0 ? item.totalBytes : item.fileSize;
   if (r.minKb > 0 && size > 0 && size < r.minKb * 1024) return left("small");
-  if (isHttp && !(await siteAccess(first))) return left("site-access");
-  return { name, kind: isHttp ? "http" : isBlob ? "blob" : "data", origin };
+  const isSw = isHttp && (isServiceWorkerUrl(url) || isServiceWorkerUrl(first));
+  if (isHttp && !isSw && !(await siteAccess(first))) return left("site-access");
+  return { name, kind: isSw ? "sw" : isHttp ? "http" : isBlob ? "blob" : "data", origin };
 }
 
 // ---- blob: and data: downloads (Zalo Web, ChatGPT, Gemini, Canva, Mega…) --------------------
@@ -1353,9 +1390,51 @@ async function candidate(item, url) {
 const BLOB_DIRECT_MAX = 25 * 1024 * 1024;
 // 524,288 base64 chars = 393,216 raw bytes per native message (safely under Chrome's 1 MB limit).
 const BLOB_B64_CHUNK = 524288;
-// Fallback queue for `blob:null` (sandboxed iframes like Gemini) or blobs > BLOB_DIRECT_MAX:
-// Chromium flushes the RAM blob in milliseconds, then `downloads.onChanged` hands it to MDM.
+// Fallback queue for `blob:null` (sandboxed iframes like Gemini), blobs > BLOB_DIRECT_MAX, or
+// browser Service Worker streams (Telegram Web, Proton Drive, StreamSaver): persisted in
+// storage so long downloads still get adopted if the MV3 service worker sleeps in the meantime.
+const ADOPT_TTL_MS = 60 * 60 * 1000;
 const pendingBlobImports = new Map();
+const adoptStore = () => (ext.storage && (ext.storage.session || ext.storage.local)) || null;
+
+async function savePendingAdopt(id, meta) {
+  const st = adoptStore();
+  if (!st) return;
+  try {
+    const { pendingAdopts = {} } = await st.get({ pendingAdopts: {} });
+    const now = Date.now();
+    const next = {};
+    for (const [k, v] of Object.entries(pendingAdopts)) {
+      if (v && now - v.at <= ADOPT_TTL_MS) next[k] = v;
+    }
+    next[String(id)] = meta;
+    await st.set({ pendingAdopts: next });
+  } catch {
+    // Storage unavailable; in-memory map still handles quick downloads.
+  }
+}
+
+async function takePendingAdopt(id) {
+  let meta = pendingBlobImports.get(id) || null;
+  pendingBlobImports.delete(id);
+  const st = adoptStore();
+  if (st) {
+    try {
+      const { pendingAdopts = {} } = await st.get({ pendingAdopts: {} });
+      const key = String(id);
+      if (!meta && pendingAdopts[key] && Date.now() - pendingAdopts[key].at <= ADOPT_TTL_MS) {
+        meta = pendingAdopts[key];
+      }
+      if (key in pendingAdopts) {
+        delete pendingAdopts[key];
+        await st.set({ pendingAdopts });
+      }
+    } catch {
+      // Ignore storage errors.
+    }
+  }
+  return meta;
+}
 
 function bytesToBase64(bytes) {
   let bin = "";
@@ -1521,14 +1600,16 @@ async function offerBlobOrData(item, url, c) {
 }
 
 function queueBlobAdopt(item, url, c) {
-  forget(pendingBlobImports, 120000);
-  pendingBlobImports.set(item.id, {
+  forget(pendingBlobImports, ADOPT_TTL_MS);
+  const meta = {
     url: item.referrer || c.origin || url,
     filename: c.name || "",
     mime: item.mime || "",
     incognito: Boolean(item.incognito),
     at: Date.now(),
-  });
+  };
+  pendingBlobImports.set(item.id, meta);
+  savePendingAdopt(item.id, meta).catch(() => {});
 }
 
 async function adoptCompletedBlob(id, meta) {
@@ -1613,7 +1694,7 @@ async function link(url, referrer, incognito, name) {
   const filename = name || addressName(url);
   const item = { url, referrer, incognito, ...(filename ? { filename } : {}) };
   const c = await candidate(item, url).catch(() => null);
-  if (!c || c.left) {
+  if (!c || c.left || c.kind !== "http") {
     leftAlone(c, item, url);
     return { taken: false };
   }
@@ -1675,6 +1756,14 @@ if (SAFARI) {
     candidate(item, url)
       .then(async (c) => {
         if (c && !c.left && c.kind !== "http") {
+          if (c.kind === "sw") {
+            // Browser Service Worker synthetic stream (Telegram Web, Proton Drive, StreamSaver…):
+            // the origin server has no such file, so let the browser decrypt & stream it, then
+            // adopt the completed file into MDM.
+            queueBlobAdopt(item, url, c);
+            suggest();
+            return;
+          }
           const taken = await offerBlobOrData(item, url, c).catch(() => false);
           if (taken) return drop(item);
           // Fallback (e.g. opaque `blob:null` from Gemini or >25 MB blob): let Chromium flush
@@ -1708,8 +1797,7 @@ if (SAFARI) {
     if (c.kind !== "http") {
       queueBlobAdopt(item, url, c);
       if (item.state === "complete") {
-        const meta = pendingBlobImports.get(item.id);
-        pendingBlobImports.delete(item.id);
+        const meta = await takePendingAdopt(item.id);
         if (meta) adoptCompletedBlob(item.id, meta).catch(() => {});
       }
       return;
@@ -1730,14 +1818,13 @@ if (SAFARI) {
 
 if (!SAFARI && ext.downloads && ext.downloads.onChanged) {
   ext.downloads.onChanged.addListener((delta) => {
-    if (!delta || !pendingBlobImports.has(delta.id)) return;
-    if (delta.state && delta.state.current === "complete") {
-      const meta = pendingBlobImports.get(delta.id);
-      pendingBlobImports.delete(delta.id);
-      adoptCompletedBlob(delta.id, meta).catch(() => {});
-    } else if (delta.state && delta.state.current === "interrupted") {
-      pendingBlobImports.delete(delta.id);
-    }
+    const state = delta && delta.state && delta.state.current;
+    if (state !== "complete" && state !== "interrupted") return;
+    takePendingAdopt(delta.id)
+      .then((meta) => {
+        if (meta && state === "complete") return adoptCompletedBlob(delta.id, meta);
+      })
+      .catch(() => {});
   });
 }
 
@@ -1950,6 +2037,7 @@ async function closeDownloadTab(tabId, urls) {
 
 async function headersReceived(d) {
   if (d.method !== "GET" && d.method !== "POST") return {};
+  if (isServiceWorkerUrl(d.url)) return {};
   const file = answerFile(d);
   if (!file) return {};
   const ref = referrers.get(d.requestId);
