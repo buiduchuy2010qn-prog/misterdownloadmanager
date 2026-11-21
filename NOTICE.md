@@ -50,4 +50,4 @@ Phần mềm này (bao gồm mã nguồn gốc và mọi bản nâng cấp/chỉ
 * Bản quyền các thư viện và biểu tượng bên thứ ba: xem tại [ATTRIBUTION.md](ATTRIBUTION.md).
 
 ### 4. Miễn trừ Trách nhiệm Bảo hành (Mục 15 & 16 của Giấy phép GPL-3.0)
-Phần mềm được cung cấp **"NGUYÊN TRẠNG" (AS IS)** mà **KHÔNG CÓ BẤT KỲ SỰ BẢO ĐẢM NÀO**, dù明 thị hay ngụ ý, bao gồm nhưng không giới hạn ở sự bảo đảm về khả năng thương mại hoặc sự phù hợp cho một mục đích cụ thể. Xem chi tiết tại [LICENSE](LICENSE).
+Phần mềm được cung cấp **"NGUYÊN TRẠNG" (AS IS)** mà **KHÔNG CÓ BẤT KỲ SỰ BẢO ĐẢM NÀO**, dù minh thị hay ngụ ý, bao gồm nhưng không giới hạn ở sự bảo đảm về khả năng thương mại hoặc sự phù hợp cho một mục đích cụ thể. Xem chi tiết tại [LICENSE](LICENSE).
