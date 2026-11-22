@@ -641,14 +641,15 @@ const ok = (what) => {
   assert.ok(gemini.calls.some((c) => c[0] === "erase" && c[1] === 912), "erased from browser shelf");
 
   // 6) Telegram Web Service Worker synthetic stream (`https://web.telegram.org/k/d/...`): must NOT
-  // be sent as an HTTP download (origin returns 302 Found), must survive MV3 worker sleep via
-  // storage, and be adopted via importLocal once Chrome's Service Worker finishes saving it.
+  // be sent as an HTTP download (origin returns 302 Found), upgrades origin-only referrers via open
+  // tabs (`#@sinhvienai`), survives MV3 worker sleep via storage, and adopts or records errors.
   const tgSession = {};
   const tg = fakeApi({
     firefox: false,
     types: "*",
     nativePort: true,
     session: tgSession,
+    tabList: [{ id: 1, active: true, incognito: false, url: "https://web.telegram.org/k/#@sinhvienai" }],
     searchItem: {
       state: "complete",
       filename: "D:\\Apps\\Locket_SINHVIENAI_Admin.ipa",
@@ -675,6 +676,7 @@ const ok = (what) => {
   assert.ok(!tg.calls.some((c) => c[0] === "cancel"), "Telegram Web SW stream must not be cancelled");
   assert.ok(!tg.calls.some((c) => c[0] === "native" && c[2].url && !c[2].importLocal), "Telegram Web SW stream must not be offered as HTTP");
   assert.ok(tgSession.pendingAdopts && tgSession.pendingAdopts["913"], "pending adoption persisted to session storage");
+  assert.equal(tgSession.pendingAdopts["913"].pageUrl, "https://web.telegram.org/k/#@sinhvienai", "SPA hash page URL captured from tab");
   // Simulate MV3 background service worker restart before download completes.
   const tgRestarted = fakeApi({
     firefox: false,
@@ -695,9 +697,48 @@ const ok = (what) => {
   const tgImported = tgRestarted.calls.find((c) => c[0] === "native" && c[2].importLocal);
   assert.ok(tgImported, "Telegram Web SW download adopted after MV3 worker restart");
   assert.equal(tgImported[2].importLocal, "D:\\Apps\\Locket_SINHVIENAI_Admin.ipa");
+  assert.equal(tgImported[2].url, "https://web.telegram.org/k/d/1518155571");
+  assert.equal(tgImported[2].referrer, "https://web.telegram.org/k/#@sinhvienai");
   assert.equal(tgImported[2].filename, "Locket_SINHVIENAI_Admin.ipa");
   assert.ok(tgRestarted.calls.some((c) => c[0] === "erase" && c[1] === 913), "erased from browser shelf after adoption");
-  ok("catch-all *, Zalo blob:, data:, Gemini blob:null, Telegram Web SW adoption, and no Chromium proxy conflict");
+
+  // 7) Interrupted browser-managed downloads: non-cancel failures are recorded in MDM (`importFailed`)
+  // with links preserved, while USER_CANCELED stays quiet.
+  tgRestarted.listeners.determining(
+    {
+      id: 914,
+      url: "https://web.telegram.org/k/d/1518155999",
+      filename: "Broken.ipa",
+      referrer: "https://web.telegram.org/k/",
+      totalBytes: 5000,
+    },
+    () => {},
+  );
+  await settle();
+  tgRestarted.listeners.downloadChanged({ id: 914, state: { current: "interrupted" }, error: { current: "NETWORK_FAILED" } });
+  await settle();
+  const tgFailed = tgRestarted.calls.find((c) => c[0] === "native" && c[2].importFailed);
+  assert.ok(tgFailed, "interrupted browser download sends importFailed");
+  assert.equal(tgFailed[2].importFailed, "NETWORK_FAILED");
+  assert.equal(tgFailed[2].url, "https://web.telegram.org/k/d/1518155999");
+  assert.equal(tgFailed[2].filename, "Broken.ipa");
+
+  tgRestarted.listeners.determining(
+    {
+      id: 915,
+      url: "https://web.telegram.org/k/d/1518155888",
+      filename: "Cancelled.ipa",
+      referrer: "https://web.telegram.org/k/",
+    },
+    () => {},
+  );
+  await settle();
+  const beforeCancelCount = natives(tgRestarted.calls).filter((m) => m.importFailed).length;
+  tgRestarted.listeners.downloadChanged({ id: 915, state: { current: "interrupted" }, error: { current: "USER_CANCELED" } });
+  await settle();
+  const afterCancelCount = natives(tgRestarted.calls).filter((m) => m.importFailed).length;
+  assert.equal(afterCancelCount, beforeCancelCount, "USER_CANCELED does not record an error row");
+  ok("catch-all *, Zalo blob:, data:, Gemini blob:null, Telegram Web SW adoption & failure recording, and no Chromium proxy conflict");
 }
 
 // Paused from the toolbar button: nothing is taken until it is on again.

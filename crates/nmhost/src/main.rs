@@ -123,9 +123,12 @@ struct Message {
     /// `rules`) without asking about it: for MDM's log. Under its own key, with no `url`: an
     /// older host takes it for an address it can't download, and hands nothing over.
     declined: Option<Notice>,
-    /// Adopt a file the browser already finished saving (fallback for opaque `blob:null` or
-    /// oversized `blob:` downloads).
+    /// Adopt a file the browser already finished saving (fallback for opaque `blob:null`,
+    /// oversized `blob:` downloads, or browser Service Worker streams).
     import_local: Option<String>,
+    /// Record a failed browser-managed download (`NETWORK_FAILED`, etc.) so MDM saves it
+    /// with `Error` status and preserves its download and source links.
+    import_failed: Option<String>,
     /// Start a chunked `blob:` / `data:` upload directly into MDM without browser dialogs.
     blob_start: bool,
     /// Append base64 `data` to the staged blob identified by this token.
@@ -330,19 +333,8 @@ fn answer(m: Message, rules: &mdm_ipc::capture::CaptureRules) -> Reply {
         .map(str::trim)
         .filter(|p| !p.is_empty())
     {
-        if !m.explicit
-            && let Err(why) = verdict_blob(&m, rules)
-        {
-            let site_url = effective_site_url(&m);
-            let site = mdm_ipc::capture::host_of(&site_url);
-            log_left(browser, &site, &file_name_of(&m), why.reason(), m.private);
-            return Reply {
-                declined: Some(why.code()),
-                ..Reply::failed(
-                    "options",
-                    format!("left to the browser by Options ({why:?})"),
-                )
-            };
+        if let Some(reply) = refuse_blob_if_disallowed(&m, rules, browser) {
+            return reply;
         }
         let path = std::path::Path::new(local);
         if !path.is_file() {
@@ -355,12 +347,28 @@ fn answer(m: Message, rules: &mdm_ipc::capture::CaptureRules) -> Reply {
         let cmd = import_command(&m, local.to_owned(), false, size);
         return delivered(&cmd);
     }
+    if let Some(err) = m
+        .import_failed
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+    {
+        if let Some(reply) = refuse_blob_if_disallowed(&m, rules, browser) {
+            return reply;
+        }
+        let mut cmd = import_command(&m, String::new(), false, m.size);
+        cmd.import_file = None;
+        cmd.import_error = Some(err.to_owned());
+        return delivered(&cmd);
+    }
     if !downloadable(&m.url) {
         return Reply::failed("refused", "not an http(s) or ftp(s) URL");
     }
     if !m.explicit
-        && (is_service_worker_url(&m.url)
-            || m.final_url.as_deref().is_some_and(is_service_worker_url))
+        && (mdm_ipc::capture::is_service_worker_url(&m.url)
+            || m.final_url
+                .as_deref()
+                .is_some_and(mdm_ipc::capture::is_service_worker_url))
     {
         let site = mdm_ipc::capture::host_of(&m.url);
         log_left(
@@ -531,11 +539,49 @@ fn verdict(
     }
 }
 
-/// Effective `http(s)` origin/page URL for a `blob:` or `data:` download (used for site/address
-/// exclusion checks and for displaying the source URL in MDM).
+/// Extract `scheme://authority/` from an `http(s)` URL so `blob:` fallback URLs never keep dead
+/// single-use browser object UUID paths.
+fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .filter(|a| !a.is_empty())?;
+    Some(format!("{scheme}://{authority}/"))
+}
+
+/// Reject a browser-managed `blob:` / `data:` / Service Worker message when Options exclude it.
+fn refuse_blob_if_disallowed(
+    m: &Message,
+    rules: &mdm_ipc::capture::CaptureRules,
+    browser: &str,
+) -> Option<Reply> {
+    if m.explicit {
+        return None;
+    }
+    let why = verdict_blob(m, rules).err()?;
+    let site_url = effective_site_url(m);
+    let site = mdm_ipc::capture::host_of(&site_url);
+    log_left(browser, &site, &file_name_of(m), why.reason(), m.private);
+    Some(Reply {
+        declined: Some(why.code()),
+        ..Reply::failed(
+            "options",
+            format!("left to the browser by Options ({why:?})"),
+        )
+    })
+}
+
+/// Effective `http(s)` URL or originating page URL for a `blob:` / `data:` / SW download (used
+/// for site/address exclusion checks and for keeping the real source URL in MDM).
 fn effective_site_url(m: &Message) -> String {
     if downloadable(&m.url) {
         return m.url.clone();
+    }
+    if let Some(r) = m.referrer.as_deref()
+        && downloadable(r)
+    {
+        return r.to_owned();
     }
     if let Some(rest) = m
         .url
@@ -543,12 +589,7 @@ fn effective_site_url(m: &Message) -> String {
         .or_else(|| m.url.strip_prefix("BLOB:"))
         && downloadable(rest)
     {
-        return rest.to_owned();
-    }
-    if let Some(r) = m.referrer.as_deref()
-        && downloadable(r)
-    {
-        return r.to_owned();
+        return origin_of(rest).unwrap_or_else(|| rest.to_owned());
     }
     String::new()
 }
@@ -1389,68 +1430,6 @@ fn downloadable(url: &str) -> bool {
         .any(|k| scheme.eq_ignore_ascii_case(k))
 }
 
-/// Synthetic `https://` download URLs served only by an in-browser Service Worker (Telegram Web
-/// MTProto decryption streams, Proton Drive E2E streams, StreamSaver.js virtual streams). The
-/// origin HTTP server has no such file (returning 302/404 to any external HTTP client), so these
-/// must stay with the browser (and, on the fork extension, be adopted via `importLocal`).
-fn is_service_worker_url(url: &str) -> bool {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return false;
-    };
-    if !scheme.eq_ignore_ascii_case("https") && !scheme.eq_ignore_ascii_case("http") {
-        return false;
-    }
-    let Some((authority, path_and_query)) = rest.find('/').map(|i| (&rest[..i], &rest[i..])) else {
-        return false;
-    };
-    let host = authority
-        .rsplit('@')
-        .next()
-        .unwrap_or(authority)
-        .split(':')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let path = path_and_query
-        .split(['?', '#'])
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let is_telegram_web = matches!(
-        host.as_str(),
-        "web.telegram.org" | "webk.telegram.org" | "weba.telegram.org" | "webz.telegram.org"
-    ) || host.ends_with(".web.telegram.org");
-    if is_telegram_web {
-        let sub = path
-            .strip_prefix("/k/")
-            .or_else(|| path.strip_prefix("/a/"))
-            .or_else(|| path.strip_prefix("/z/"))
-            .or_else(|| path.strip_prefix('/'))
-            .unwrap_or("");
-        return sub.starts_with("d/")
-            || sub.starts_with("download/")
-            || sub.starts_with("stream/")
-            || sub.starts_with("progressive/");
-    }
-    let is_proton = host.ends_with(".proton.me") || host.ends_with(".protonmail.com");
-    if is_proton && (path.starts_with("/sw/") || path.starts_with("/download/sw/")) {
-        return true;
-    }
-    if path.contains("/sw-stream/") || path.contains("/__download__/") {
-        return true;
-    }
-    if host == "jimmywarting.github.io"
-        && path.starts_with("/streamsaver.js/")
-        && !path.ends_with(".html")
-        && !path.ends_with(".js")
-        && !path.ends_with(".css")
-        && !path.ends_with(".map")
-    {
-        return true;
-    }
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1982,10 +1961,42 @@ mod tests {
         let (cmd, staging) = store.take_finished(&id).expect("finished");
         assert!(cmd.import_move);
         assert_eq!(cmd.name.as_deref(), Some("Kịch Bản 11A8.docx"));
-        assert_eq!(cmd.url.as_deref(), Some("https://chat.zalo.me/eee013ce"));
+        assert_eq!(cmd.url.as_deref(), Some("https://chat.zalo.me/"));
         assert_eq!(cmd.size, Some(11));
         assert_eq!(std::fs::read(&staging).unwrap(), b"hello zalo!");
         let _ = std::fs::remove_file(&staging);
+
+        // `blob:` URL with a rich page referrer keeps the full page URL instead of a dead blob UUID.
+        let pin_msg: Message = serde_json::from_str(
+            r#"{"blobStart":true,"url":"blob:https://www.pinterest.com/942aed50-e7f2-4677-b941-b458194b7849","referrer":"https://www.pinterest.com/pin/12345/","filename":"photo.jpg","userAgent":"Chrome/141"}"#,
+        )
+        .unwrap();
+        let pin_cmd = import_command(&pin_msg, "C:\\temp\\pin.part".into(), true, Some(123));
+        assert_eq!(
+            pin_cmd.url.as_deref(),
+            Some("https://www.pinterest.com/pin/12345/")
+        );
+
+        // `blob:` URL with no referrer falls back to the clean origin root rather than the UUID.
+        let no_ref: Message = serde_json::from_str(
+            r#"{"url":"blob:https://chat.zalo.me/dead-uuid-1234","filename":"a.docx"}"#,
+        )
+        .unwrap();
+        assert_eq!(effective_site_url(&no_ref), "https://chat.zalo.me/");
+
+        // `importFailed` rejects downloads disallowed by Options cleanly (same verdict_blob rules).
+        let blocked_fail: Message = serde_json::from_str(
+            r#"{"importFailed":"NETWORK_FAILED","url":"https://web.telegram.org/k/d/1518155571","referrer":"https://web.telegram.org/k/#@sinhvienai","filename":"Locket.ipa","size":93739390,"userAgent":"Chrome/141"}"#,
+        )
+        .unwrap();
+        let fail_rules = mdm_ipc::capture::CaptureRules {
+            excluded_sites: "web.telegram.org".into(),
+            ..mdm_ipc::capture::CaptureRules::default()
+        };
+        let blocked_reply = answer(blocked_fail, &fail_rules);
+        assert!(!blocked_reply.ok);
+        assert_eq!(blocked_reply.why, Some("options"));
+        assert_eq!(blocked_reply.declined, Some("site"));
 
         // Cancelled session deletes its staging file cleanly.
         let m2: Message = serde_json::from_str(
@@ -2015,7 +2026,10 @@ mod tests {
             "https://send.example.org/__download__/abc",
             "https://jimmywarting.github.io/StreamSaver.js/12345/out.zip",
         ] {
-            assert!(is_service_worker_url(sw), "expected SW stream: {sw}");
+            assert!(
+                mdm_ipc::capture::is_service_worker_url(sw),
+                "expected SW stream: {sw}"
+            );
         }
         for normal in [
             "https://telegram.org/dl/desktop/win64",
@@ -2026,7 +2040,7 @@ mod tests {
             "https://example.com/files/Locket_SINHVIENAI_Admin.ipa",
         ] {
             assert!(
-                !is_service_worker_url(normal),
+                !mdm_ipc::capture::is_service_worker_url(normal),
                 "expected normal HTTP: {normal}"
             );
         }

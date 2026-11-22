@@ -1263,13 +1263,79 @@ async function browserProxy(url, incognito) {
   return {};
 }
 
+// Resolve the fullest http(s) page URL available from `rawReferrer` / `fallbackOrigin`, upgrading
+// origin-only (`Referrer-Policy: origin`) or hash-stripped SPA referrers using open tabs.
+async function resolvePageUrl(rawReferrer, fallbackOrigin, incognito, allowActiveFallback) {
+  const originOf = (u) => {
+    try {
+      const parsed = new URL(u);
+      return /^https?:$/i.test(parsed.protocol) ? parsed.origin : "";
+    } catch {
+      return "";
+    }
+  };
+  const samePrivacy = (tab) => Boolean(tab && tab.incognito) === Boolean(incognito);
+  const pickRichTab = (tabs, origin, prefix) => {
+    const matches = (tabs || [])
+      .filter((t) => t && typeof t.url === "string" && samePrivacy(t) && originOf(t.url) === origin)
+      .sort((a, b) => Number(Boolean(b.active)) - Number(Boolean(a.active)));
+    if (prefix) {
+      const richer = matches.find((t) => t.url.startsWith(prefix) && t.url.length > prefix.length);
+      if (richer) return richer.url;
+    }
+    return matches[0]?.url || "";
+  };
+  const ref = String(rawReferrer || "").trim();
+  const refOrigin = originOf(ref);
+  if (refOrigin) {
+    if (ext.tabs?.query) {
+      try {
+        const refUrl = new URL(ref);
+        const tabs = await ext.tabs.query({ url: `${refOrigin}/*` });
+        const rootLike = refUrl.pathname === "/" && !refUrl.search && !refUrl.hash;
+        const hit = pickRichTab(tabs, refOrigin, rootLike ? "" : ref);
+        if (hit && (hit.length > ref.length || rootLike)) return hit;
+      } catch {
+        // Keep raw referrer if tab inspection fails.
+      }
+    }
+    return ref;
+  }
+  const fbOrigin = originOf(fallbackOrigin);
+  if (fbOrigin) {
+    if (ext.tabs?.query) {
+      try {
+        const tabs = await ext.tabs.query({ url: `${fbOrigin}/*` });
+        const hit = pickRichTab(tabs, fbOrigin, "");
+        if (hit) return hit;
+      } catch {
+        // Fall through to origin root.
+      }
+    }
+    return `${fbOrigin}/`;
+  }
+  if (allowActiveFallback && ext.tabs?.query) {
+    try {
+      const tabs = await ext.tabs.query({ active: true, lastFocusedWindow: true });
+      const hit = (tabs || []).find(
+        (t) => t && typeof t.url === "string" && samePrivacy(t) && originOf(t.url),
+      );
+      if (hit) return hit.url;
+    } catch {
+      // No active tab URL available.
+    }
+  }
+  return "";
+}
+
 // `explicit`: the user asked for this one (the right-click item), so Options' automatic-capture
 // rules (file types, excluded sites) don't apply; the host checks them for everything else.
 async function handOff(d) {
+  const referrer = await resolvePageUrl(d.referrer || "", "", d.incognito, false);
   const message = {
     url: d.url,
     finalUrl: d.finalUrl && d.finalUrl !== d.url ? d.finalUrl : "",
-    referrer: d.referrer || "",
+    referrer,
     cookies: await cookieHeader(d.url, d),
     filename: d.filename || "",
     ...(d.size > 0 ? { size: d.size } : {}),
@@ -1588,9 +1654,10 @@ async function offerBlobOrData(item, url, c) {
   if (await remoteTarget()) return false;
   const payload = c.kind === "data" ? readDataUrlBase64(url) : await readTabBlobBase64(url, c.origin, item.referrer);
   if (!payload || typeof payload.b64 !== "string") return false;
+  const referrer = await resolvePageUrl(item.referrer || "", c.origin || "", item.incognito, true);
   const meta = {
     url,
-    referrer: item.referrer || c.origin || "",
+    referrer,
     filename: c.name || "",
     size: payload.size,
     ...(item.mime ? { mime: item.mime } : {}),
@@ -1599,17 +1666,23 @@ async function offerBlobOrData(item, url, c) {
   return streamBlobToHost(payload.b64, meta);
 }
 
-function queueBlobAdopt(item, url, c) {
+async function queueBlobAdopt(item, url, c) {
   forget(pendingBlobImports, ADOPT_TTL_MS);
+  const pageUrl = await resolvePageUrl(item.referrer || "", c.origin || "", item.incognito, true);
+  const isBlobOrData = c.kind === "blob" || c.kind === "data";
+  const primaryUrl = isBlobOrData ? pageUrl || (c.origin ? `${c.origin}/` : url) : url;
+  const size = item.totalBytes > 0 ? item.totalBytes : item.fileSize > 0 ? item.fileSize : 0;
   const meta = {
-    url: item.referrer || c.origin || url,
+    url: primaryUrl,
+    pageUrl: pageUrl || (isBlobOrData ? primaryUrl : ""),
     filename: c.name || "",
+    size,
     mime: item.mime || "",
     incognito: Boolean(item.incognito),
     at: Date.now(),
   };
   pendingBlobImports.set(item.id, meta);
-  savePendingAdopt(item.id, meta).catch(() => {});
+  await savePendingAdopt(item.id, meta).catch(() => {});
 }
 
 async function adoptCompletedBlob(id, meta) {
@@ -1623,11 +1696,11 @@ async function adoptCompletedBlob(id, meta) {
   }
   if (!d || d.state !== "complete" || !d.filename) return;
   const baseName = meta.filename || d.filename.split(/[\\/]/).pop() || "";
-  const size = d.fileSize > 0 ? d.fileSize : d.totalBytes > 0 ? d.totalBytes : 0;
+  const size = d.fileSize > 0 ? d.fileSize : d.totalBytes > 0 ? d.totalBytes : meta.size || 0;
   const reply = await native({
     importLocal: d.filename,
     url: meta.url,
-    referrer: meta.url,
+    referrer: meta.pageUrl || meta.url,
     filename: baseName,
     ...(size > 0 ? { size } : {}),
     ...(meta.mime || d.mime ? { mime: meta.mime || d.mime } : {}),
@@ -1636,6 +1709,34 @@ async function adoptCompletedBlob(id, meta) {
   if (reply.ok) {
     await ext.storage.local.remove("declined").catch(() => {});
     ext.downloads.erase({ id }).catch(() => {});
+  }
+}
+
+async function adoptFailedBlob(id, meta, deltaErr) {
+  if (await remoteTarget()) return;
+  let d = null;
+  try {
+    const list = await ext.downloads.search({ id });
+    d = (list && list[0]) || null;
+  } catch {
+    d = null;
+  }
+  const err = String(deltaErr || (d && d.error) || "NETWORK_FAILED");
+  if (/^USER_(?:CANCELED|SHUTDOWN)$/i.test(err)) return;
+  const baseName =
+    meta.filename || (d && d.filename && d.filename.split(/[\\/]/).pop()) || "";
+  const size = (d && (d.totalBytes > 0 ? d.totalBytes : d.fileSize)) || meta.size || 0;
+  const reply = await native({
+    importFailed: err,
+    url: meta.url,
+    referrer: meta.pageUrl || meta.url,
+    filename: baseName,
+    ...(size > 0 ? { size } : {}),
+    ...(meta.mime || (d && d.mime) ? { mime: meta.mime || (d && d.mime) } : {}),
+    ...(meta.incognito ? { private: true } : {}),
+  });
+  if (reply.ok) {
+    await ext.storage.local.remove("declined").catch(() => {});
   }
 }
 
@@ -1759,8 +1860,8 @@ if (SAFARI) {
           if (c.kind === "sw") {
             // Browser Service Worker synthetic stream (Telegram Web, Proton Drive, StreamSaver…):
             // the origin server has no such file, so let the browser decrypt & stream it, then
-            // adopt the completed file into MDM.
-            queueBlobAdopt(item, url, c);
+            // adopt the completed (or record failed) file into MDM.
+            await queueBlobAdopt(item, url, c);
             suggest();
             return;
           }
@@ -1768,7 +1869,7 @@ if (SAFARI) {
           if (taken) return drop(item);
           // Fallback (e.g. opaque `blob:null` from Gemini or >25 MB blob): let Chromium flush
           // RAM to disk in milliseconds, then adopt the saved file straight into MDM.
-          queueBlobAdopt(item, url, c);
+          await queueBlobAdopt(item, url, c);
           suggest();
           return;
         }
@@ -1795,7 +1896,7 @@ if (SAFARI) {
     const c = await candidate(item, url).catch(() => null);
     if (!c || c.left) return leftAlone(c, item, url);
     if (c.kind !== "http") {
-      queueBlobAdopt(item, url, c);
+      await queueBlobAdopt(item, url, c);
       if (item.state === "complete") {
         const meta = await takePendingAdopt(item.id);
         if (meta) adoptCompletedBlob(item.id, meta).catch(() => {});
@@ -1822,7 +1923,9 @@ if (!SAFARI && ext.downloads && ext.downloads.onChanged) {
     if (state !== "complete" && state !== "interrupted") return;
     takePendingAdopt(delta.id)
       .then((meta) => {
-        if (meta && state === "complete") return adoptCompletedBlob(delta.id, meta);
+        if (!meta) return;
+        if (state === "complete") return adoptCompletedBlob(delta.id, meta);
+        return adoptFailedBlob(delta.id, meta, (delta.error && delta.error.current) || "");
       })
       .catch(() => {});
   });

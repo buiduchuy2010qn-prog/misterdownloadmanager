@@ -395,6 +395,9 @@ pub struct Item {
     /// (or its one file, once known).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteSpec>,
+    /// Originating web/share page URL from the browser, kept on disk so restarts never lose it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub referer: Option<String>,
     #[serde(skip)]
     pub live: Option<Live>,
     /// The session's temporary view while a torrent is being checked; never saved.
@@ -696,6 +699,7 @@ impl Item {
             server: None,
             direct: false,
             remote: None,
+            referer: None,
             live: None,
             torrent_check: None,
             snap: None,
@@ -721,6 +725,46 @@ impl Item {
             } else {
                 self.downloaded > 0 || self.owns_resume_state()
             }
+    }
+
+    /// Originating web page URL (checks live browser context first, then persisted `referer`).
+    pub fn source_page(&self) -> Option<&str> {
+        self.context
+            .referer
+            .as_deref()
+            .or(self.referer.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Whether the download address is browser-managed (cannot be fetched by an external HTTP
+    /// client directly).
+    pub fn is_browser_only_url(&self) -> bool {
+        self.url.as_str() == "https://browser.local/"
+            || mdm_ipc::capture::is_service_worker_url(self.url.as_str())
+    }
+
+    /// Best actionable link for opening/copying: real web page for browser-only SW/`blob:` items
+    /// (falling back to the URL when non-synthetic), otherwise the download URL itself.
+    pub fn primary_link(&self) -> Option<String> {
+        if self.url.as_str() == "https://browser.local/" {
+            self.source_page().map(str::to_owned)
+        } else if mdm_ipc::capture::is_service_worker_url(self.url.as_str()) {
+            self.source_page()
+                .map(str::to_owned)
+                .or_else(|| Some(self.url.to_string()))
+        } else {
+            Some(self.url.to_string())
+        }
+    }
+
+    /// Originating page URL when it differs from [`Self::primary_link`] (so menus can offer both
+    /// the direct download link and the originating web page).
+    pub fn distinct_source_page(&self) -> Option<String> {
+        let primary = self.primary_link();
+        self.source_page()
+            .filter(|p| primary.as_deref() != Some(*p))
+            .map(str::to_owned)
     }
 
     /// Pull the engine's snapshot into the row. Returns true when the download just ended.

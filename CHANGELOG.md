@@ -5,6 +5,21 @@ Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 
 ## [Unreleased]
 
+## [0.5.14] - 2026-11-22
+
+### Added
+
+- **Permanent preservation of download & originating page links (*avoid losing links*):**
+  - Originating page URLs (`Item::referer`) are now persisted on disk inside `downloads.json` and automatically restored into runtime state on launch so source links are never lost across restarts.
+  - Upgraded the browser extension (`resolvePageUrl`) with tab URL inspection so origin-only referrers (`Referrer-Policy: origin`, e.g. `https://www.123pan.com/`) and hash-stripped SPA referrers (`https://web.telegram.org/k/` -> `https://web.telegram.org/k/#@...`) capture the full page/channel URL.
+  - Fixed `blob:` URL resolution (`effective_site_url`) so downloads with an originating page keep the real page link instead of dead `blob:` UUID paths.
+- **Save failed downloads cleanly with `Error` status & actionable links:**
+  - Browser-managed downloads (Telegram Web Service Worker streams, Proton Drive `/sw/`, `blob:null`, >25 MB blobs) that fail due to network/server/disk errors (`interrupted` other than user cancellation) are automatically saved in MDM with `● Lỗi` status, readable error details, and both download & source page links preserved.
+  - Clicking Resume/Play on a browser-only stream opens its saved link directly in your browser instead of failing externally.
+- **Inline clickable link & 1-click Copy UI everywhere:**
+  - Modern download rows now display the link right beneath the file name as a clickable URL plus a 1-click **Sao chép / Copy** button (`✓ Đã chép` feedback; always shown on `Error` rows and on hover/selection for other rows).
+  - Added **Ctrl+C**, right-click menu actions (**Copy download link**, **Open download link in browser**, plus **Copy source page link** / **Open source web page** when distinct), and **Open / Copy** buttons + clickable source link in **File Properties**, without triggering duplicate clipboard prompts while clipboard monitoring is active.
+
 ## [0.5.13] - 2026-11-20
 
 ### Fixed

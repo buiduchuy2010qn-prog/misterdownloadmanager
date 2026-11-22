@@ -120,6 +120,9 @@ fn load_from(p: &Path, empty: Loaded) -> Loaded {
     match parsed {
         Some(mut f) => {
             for i in &mut f.items {
+                if i.context.referer.is_none() {
+                    i.context.referer = i.referer.clone();
+                }
                 // Downloads that were running when the app closed are now stopped (resumable).
                 if i.status == Status::Downloading {
                     i.status = Status::Stopped;
@@ -710,5 +713,39 @@ mod tests {
         let reloaded = load_from(&p, empty());
         assert!(reloaded.settings.minimize_to_tray);
         assert!(reloaded.settings.taskbar_minimize_default_applied);
+    }
+
+    #[test]
+    fn persisted_referer_survives_save_and_restores_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("downloads.json");
+        let url: url::Url = "https://cdn.example.com/file.zip".parse().unwrap();
+        let mut item = Item::new(
+            1,
+            url,
+            dir.path().join("file.zip"),
+            crate::model::Category::Compressed,
+        );
+        item.referer = Some("https://www.123pan.com/s/share-key".into());
+        item.status = Status::Error;
+        item.error = Some("server answered 403 Forbidden".into());
+        let layout = crate::list::ListState::default().layout();
+        save_to(&p, 2, &[item], &layout, &Settings::default(), &[]).unwrap();
+
+        let reloaded = load_from(&p, empty());
+        assert_eq!(reloaded.items.len(), 1);
+        assert_eq!(reloaded.items[0].status, Status::Error);
+        assert_eq!(
+            reloaded.items[0].referer.as_deref(),
+            Some("https://www.123pan.com/s/share-key")
+        );
+        assert_eq!(
+            reloaded.items[0].context.referer.as_deref(),
+            Some("https://www.123pan.com/s/share-key")
+        );
+        assert_eq!(
+            reloaded.items[0].distinct_source_page().as_deref(),
+            Some("https://www.123pan.com/s/share-key")
+        );
     }
 }

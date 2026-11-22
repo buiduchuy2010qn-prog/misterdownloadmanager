@@ -46,7 +46,7 @@ impl Properties {
             id: item.id,
             address: item.url.to_string(),
             description: item.description.clone(),
-            referer: item.context.referer.clone().unwrap_or_default(),
+            referer: item.source_page().unwrap_or_default().to_owned(),
             login,
             password,
             move_to: None,
@@ -264,7 +264,7 @@ impl Properties {
         if editable {
             let edit = winui::edit_light(
                 ui,
-                r(o, col, 171.0, 467.0 - col, 23.0),
+                r(o, col, 171.0, 322.0 - col, 23.0),
                 &mut self.address,
                 true,
                 false,
@@ -273,7 +273,43 @@ impl Properties {
                 self.error = None;
             }
         } else {
-            readonly(ui, r(o, col, 171.0, 467.0 - col, 23.0), &self.address);
+            readonly(ui, r(o, col, 171.0, 322.0 - col, 23.0), &self.address);
+        }
+        let addr_trimmed = self.address.trim().to_owned();
+        let can_open_addr = (addr_trimmed.starts_with("http://")
+            || addr_trimmed.starts_with("https://"))
+            && addr_trimmed != "https://browser.local/";
+        if winui::button_light(
+            ui,
+            r(o, 328.0, 172.0, 59.0, 21.0),
+            crate::extension::bi("Mở link", "Open"),
+            if can_open_addr {
+                ButtonKind::Normal
+            } else {
+                ButtonKind::Disabled
+            },
+            false,
+        )
+        .clicked()
+            && can_open_addr
+        {
+            crate::launch::open(addr_trimmed.clone());
+        }
+        if winui::button_light(
+            ui,
+            r(o, 393.0, 172.0, 73.0, 21.0),
+            crate::extension::bi("Sao chép", "Copy"),
+            if addr_trimmed.is_empty() {
+                ButtonKind::Disabled
+            } else {
+                ButtonKind::Normal
+            },
+            false,
+        )
+        .clicked()
+            && !addr_trimmed.is_empty()
+        {
+            crate::copy_text(ui.ctx(), addr_trimmed);
         }
         text(
             &p,
@@ -297,13 +333,37 @@ impl Properties {
             crate::i18n::t("The web page from which this file was obtained:"),
             LIGHT_TEXT(),
         );
-        // i18n: the web page is not known
-        let page = item
-            .context
-            .referer
-            .as_deref()
-            .unwrap_or(crate::i18n::t("Unknown"));
-        fit(ui, 11.0, 272.0, page);
+        if let Some(page_url) = item.source_page() {
+            if page_url.starts_with("http://") || page_url.starts_with("https://") {
+                let link_color = egui::Color32::from_rgb(0, 102, 204);
+                let (rect, _) = winui::text_fit(
+                    &p,
+                    o.x + 11.0,
+                    o.y + 272.0,
+                    page_url,
+                    link_color,
+                    o.x + 466.0,
+                );
+                let resp = winui::copyable(ui, rect, ("props", 272), page_url, false);
+                if resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    p.hline(
+                        rect.x_range(),
+                        o.y + 274.0,
+                        egui::Stroke::new(1.0, link_color),
+                    );
+                }
+                if resp.clicked() {
+                    crate::launch::open(page_url.to_owned());
+                }
+                resp.on_hover_text(page_url);
+            } else {
+                fit(ui, 11.0, 272.0, page_url);
+            }
+        } else {
+            // i18n: the web page is not known
+            fit(ui, 11.0, 272.0, crate::i18n::t("Unknown"));
+        }
         winui::etched_h(&p, o.x + 11.0, o.y + 282.0, 456.0);
         // i18n: HTTP term (sic): the page the download was started from
         text(

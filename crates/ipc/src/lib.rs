@@ -123,6 +123,12 @@ pub struct Command {
     /// the user's download folder (kept in place if already in the target folder).
     #[schemars(skip)]
     pub import_move: bool,
+    /// From the browser: interrupt code (`NETWORK_FAILED`, etc.) when a browser-managed
+    /// Service Worker or large `blob:` download failed, so MDM records a `Status::Error` row
+    /// with its link preserved.
+    #[schemars(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_error: Option<String>,
 }
 
 /// One cookie as the browser keeps it (`cookies.getAll`'s fields, under the extension's names

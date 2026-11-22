@@ -258,6 +258,68 @@ pub fn add_site(sites: &str, host: &str) -> String {
     out
 }
 
+/// Synthetic `https://` download URLs served only by an in-browser Service Worker (Telegram Web
+/// MTProto decryption streams, Proton Drive E2E streams, StreamSaver.js virtual streams). The
+/// origin HTTP server has no such file (returning 302/404 to any external HTTP client), so these
+/// must stay with the browser (and, on the fork extension, be adopted via `importLocal`).
+pub fn is_service_worker_url(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("https") && !scheme.eq_ignore_ascii_case("http") {
+        return false;
+    }
+    let Some((authority, path_and_query)) = rest.find('/').map(|i| (&rest[..i], &rest[i..])) else {
+        return false;
+    };
+    let host = authority
+        .rsplit('@')
+        .next()
+        .unwrap_or(authority)
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let path = path_and_query
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let is_telegram_web = matches!(
+        host.as_str(),
+        "web.telegram.org" | "webk.telegram.org" | "weba.telegram.org" | "webz.telegram.org"
+    ) || host.ends_with(".web.telegram.org");
+    if is_telegram_web {
+        let sub = path
+            .strip_prefix("/k/")
+            .or_else(|| path.strip_prefix("/a/"))
+            .or_else(|| path.strip_prefix("/z/"))
+            .or_else(|| path.strip_prefix('/'))
+            .unwrap_or("");
+        return sub.starts_with("d/")
+            || sub.starts_with("download/")
+            || sub.starts_with("stream/")
+            || sub.starts_with("progressive/");
+    }
+    let is_proton = host.ends_with(".proton.me") || host.ends_with(".protonmail.com");
+    if is_proton && (path.starts_with("/sw/") || path.starts_with("/download/sw/")) {
+        return true;
+    }
+    if path.contains("/sw-stream/") || path.contains("/__download__/") {
+        return true;
+    }
+    if host == "jimmywarting.github.io"
+        && path.starts_with("/streamsaver.js/")
+        && !path.ends_with(".html")
+        && !path.ends_with(".js")
+        && !path.ends_with(".css")
+        && !path.ends_with(".map")
+    {
+        return true;
+    }
+    false
+}
+
 /// The sites a list holds (space-separated), as a file: one a line (Options → Download panels,
 /// #424).
 pub fn sites_to_text(sites: &str) -> String {

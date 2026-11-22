@@ -144,7 +144,17 @@ pub fn set_clipboard(text: &str) -> bool {
     }
 }
 
+static OWN_CLIPBOARD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Last text copied programmatically by MDM itself so clipboard monitoring ignores its own copies.
+pub fn last_own_clipboard() -> Option<String> {
+    OWN_CLIPBOARD.lock().ok().and_then(|guard| guard.clone())
+}
+
 fn write_clipboard(off: bool, text: String) -> Option<String> {
+    if let Ok(mut guard) = OWN_CLIPBOARD.lock() {
+        *guard = Some(text.trim().to_owned());
+    }
     if off {
         tracing::info!("clipboard (off-screen, not copied): {text}");
         None

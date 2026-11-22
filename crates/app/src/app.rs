@@ -168,6 +168,14 @@ enum Cmd {
     RssFeeds(bool),
     /// Right-click → Refresh download address: open the source page, edit the address.
     RefreshAddress,
+    /// Copy the selected download's link (Ctrl+C or right-click menu).
+    CopyLink,
+    /// Open the selected download's link in the default browser.
+    OpenLink,
+    /// Copy the originating web page URL (`referer`).
+    CopyReferer,
+    /// Open the originating web page URL (`referer`) in the default browser.
+    OpenReferer,
     /// Right-click → Verify checksum… (beyond IDM).
     VerifyChecksum,
     /// Right-click → Extract (beyond IDM, #37): a finished archive, into its folder.
@@ -334,6 +342,7 @@ impl Cmd {
             Cmd::Remove => "Delete",
             Cmd::RemoveWithFiles => "Shift+Delete",
             Cmd::Open => "Enter",
+            Cmd::CopyLink => "Ctrl+C",
             Cmd::SelectAll => "Ctrl+A",
             Cmd::Properties => "Alt+Enter",
             Cmd::InterfaceSize(100) => "Ctrl+0",
@@ -519,6 +528,8 @@ pub struct App {
     confirm_category_delete: Option<dialogs::DeleteCategory>,
     /// File Properties windows, one per download.
     properties: Vec<crate::properties::Properties>,
+    /// Row whose inline Copy pill briefly shows `✓ Đã chép` / `✓ Copied`.
+    copied_link_feedback: Option<(u64, Instant)>,
     /// Verify checksum windows, one per download.
     checksums: Vec<crate::checksum::ChecksumDialog>,
     batch: Option<crate::batch::Batch>,
@@ -880,6 +891,75 @@ fn file_icon(name: &str) -> IconKey {
     }
 }
 
+/// Human-readable error message for a Chromium/Firefox download interrupt code.
+fn describe_browser_error(code: &str) -> String {
+    let trimmed = code.trim();
+    match trimmed.to_ascii_uppercase().as_str() {
+        "NETWORK_FAILED" => crate::extension::bi(
+            "Lỗi mạng khi trình duyệt đang tải",
+            "Browser network error during download",
+        )
+        .to_owned(),
+        "NETWORK_TIMEOUT" => crate::extension::bi(
+            "Quá thời gian chờ mạng trên trình duyệt",
+            "Browser download timed out",
+        )
+        .to_owned(),
+        "NETWORK_DISCONNECTED" => crate::extension::bi(
+            "Mất kết nối mạng khi trình duyệt đang tải",
+            "Network disconnected during browser download",
+        )
+        .to_owned(),
+        "NETWORK_SERVER_DOWN" => crate::extension::bi(
+            "Máy chủ không phản hồi trên trình duyệt",
+            "Server unreachable from browser",
+        )
+        .to_owned(),
+        "SERVER_FAILED" => crate::extension::bi(
+            "Máy chủ báo lỗi khi trình duyệt đang tải",
+            "Server error during browser download",
+        )
+        .to_owned(),
+        "SERVER_NO_RANGE" => crate::extension::bi(
+            "Máy chủ không hỗ trợ tiếp tục tải (Range)",
+            "Server does not support resuming",
+        )
+        .to_owned(),
+        "SERVER_BAD_CONTENT" => crate::extension::bi(
+            "Dữ liệu máy chủ trả về bị lỗi",
+            "Server returned bad content",
+        )
+        .to_owned(),
+        "SERVER_UNAUTHORIZED" => crate::extension::bi(
+            "Máy chủ yêu cầu đăng nhập (401)",
+            "Server requires authorization (401)",
+        )
+        .to_owned(),
+        "SERVER_FORBIDDEN" => crate::extension::bi(
+            "Máy chủ từ chối quyền tải (403)",
+            "Server forbade download (403)",
+        )
+        .to_owned(),
+        "FILE_NO_SPACE" => {
+            crate::extension::bi("Ổ đĩa không đủ dung lượng trống", "Insufficient disk space")
+                .to_owned()
+        }
+        "FILE_ACCESS_DENIED" => crate::extension::bi(
+            "Không có quyền ghi vào thư mục lưu",
+            "Access denied writing download file",
+        )
+        .to_owned(),
+        "FILE_FAILED" => {
+            crate::extension::bi("Lỗi ghi tệp trên trình duyệt", "Browser file write error")
+                .to_owned()
+        }
+        _ => format!(
+            "{}: {trimmed}",
+            crate::extension::bi("Tải thất bại trên trình duyệt", "Browser download failed")
+        ),
+    }
+}
+
 /// Sort key for list column col: numbers where IDM sorts numerically, else text.
 /// `queued`: the download is in a queue (the Q column's mark).
 fn sort_key(it: &Item, col: usize, queued: bool) -> (f64, String) {
@@ -1141,6 +1221,7 @@ impl App {
             after_stop: Vec::new(),
             confirm_category_delete: None,
             properties: Vec::new(),
+            copied_link_feedback: None,
             checksums: Vec::new(),
             batch: None,
             video_dlg: None,
@@ -1719,6 +1800,9 @@ impl App {
         } else {
             String::new()
         };
+        let link_copied = self
+            .copied_link_feedback
+            .is_some_and(|(cid, at)| cid == it.id && at.elapsed() < Duration::from_millis(1600));
         list::Row {
             status_group: match it.status {
                 // i18n: a download's status (state it is in, not a command): being downloaded now
@@ -1737,6 +1821,8 @@ impl App {
             progress: it.fraction().map(|f| f as f32),
             size_detail,
             can_resume: it.can_start(),
+            link_url: it.primary_link().unwrap_or_default(),
+            link_copied,
             cells: [
                 it.file_name.clone(),
                 String::new(),
@@ -2043,6 +2129,12 @@ impl App {
         item.size = size;
         item.description = description;
         item.login = login;
+        item.referer = context
+            .referer
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
         // The browser had started it: the host is already sending the file (#44).
         item.direct = crate::debrid::browser_started(&context);
         item.context = context;
@@ -2713,6 +2805,12 @@ impl App {
             self.import_browser_file(cmd, ctx);
             return;
         }
+        // Failed browser-managed download (Service Worker / large `blob:`): record an `Error`
+        // row so the user sees the failure and keeps both download & page links.
+        if cmd.import_error.is_some() {
+            self.record_browser_failure(cmd, ctx);
+            return;
+        }
         // A magnet link or a .torrent file (browser, command line, file association): Add
         // torrent shows what it holds.
         if let Some(m) = cmd.url.as_deref().filter(|u| {
@@ -2857,6 +2955,65 @@ impl App {
             return;
         }
         self.finalize_browser_import(cmd, url, None, true, ctx);
+    }
+
+    fn record_browser_failure(&mut self, mut cmd: ipc::Command, ctx: &egui::Context) {
+        let Some(err_raw) = cmd.import_error.take() else {
+            return;
+        };
+        let url = cmd
+            .url
+            .as_deref()
+            .or(cmd.referer.as_deref())
+            .and_then(|u| url::Url::parse(u.trim()).ok())
+            .filter(mdm_engine::supported)
+            .unwrap_or_else(|| {
+                url::Url::parse("https://browser.local/").expect("static fallback URL")
+            });
+        let raw_name = cmd
+            .name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| mdm_engine::naming::file_name(None, &url));
+        let name = mdm_engine::naming::sanitize(&raw_name);
+        let category = cmd
+            .category
+            .as_deref()
+            .and_then(|k| Category::all().into_iter().find(|c| c.key() == k))
+            .unwrap_or_else(|| Category::of(&name));
+        let dir = cmd
+            .dir
+            .clone()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.settings.category_dir(category, &self.downloads));
+        let dest = mdm_engine::naming::destination(&dir, &name);
+        let size = cmd.size;
+        let silent = cmd.silent;
+        let err_msg = describe_browser_error(&err_raw);
+        let id = self.push_item(
+            url,
+            dest,
+            category,
+            String::new(),
+            size,
+            None,
+            cmd,
+            crate::i18n::mark("from the browser"),
+        );
+        if let Some(item) = self.item(id) {
+            item.status = Status::Error;
+            item.error = Some(err_msg.clone());
+            item.last_try = Some(model::now_stamp());
+            item.note(format!("Failed: {err_msg}"));
+        }
+        self.dirty = true;
+        self.sound(1);
+        if !silent {
+            self.selection.set(id);
+            if self.fdm_mode() && !crate::offscreen() {
+                self.show_window(ctx);
+            }
+        }
     }
 
     /// Finish moving/adopting a browser `blob:` / `data:` file into either a dialog-chosen path
@@ -3103,6 +3260,16 @@ impl App {
         let Some(item) = self.item(id) else { return };
         // A finished gallery may start again: it fetches the files not there yet (#58).
         if item.live.is_some() || (item.status == Status::Complete && item.gallery.is_none()) {
+            return;
+        }
+        // Browser-only streams (Service Worker decryption, ephemeral blobs) cannot be fetched by
+        // an external HTTP client: resuming opens the saved page/download link in the browser.
+        if item.is_browser_only_url() {
+            if let Some(link) = item.primary_link()
+                && !crate::offscreen()
+            {
+                crate::launch::open(link);
+            }
             return;
         }
         // A video from a page: yt-dlp, not the engine.
@@ -3773,6 +3940,9 @@ impl App {
         let Some(text) = text.filter(|t| Some(t) != before.as_ref()) else {
             return;
         };
+        if crate::last_own_clipboard().as_deref() == Some(text.as_str()) {
+            return;
+        }
         let Ok(url) = url::Url::parse(&text) else {
             return;
         };
@@ -3807,6 +3977,7 @@ impl App {
         let Some(item) = self.item(c.id) else { return };
         item.description = c.description;
         item.login = c.login;
+        item.referer = c.referer.clone();
         item.context.referer = c.referer;
         // "Through …" changed (#44): the next start goes the new way. The service's link is
         // dropped from the resume state: directly, it continues from the host's own address;
@@ -5608,6 +5779,39 @@ impl App {
         }
     }
 
+    /// Copy the download (or browser page) link(s) of `ids` to the clipboard and briefly highlight
+    /// the inline Copy pill when a single row was copied.
+    fn copy_item_links(&mut self, ids: &[u64], ctx: &egui::Context) {
+        let links: Vec<String> = ids
+            .iter()
+            .filter_map(|id| self.items.iter().find(|i| i.id == *id))
+            .filter_map(Item::primary_link)
+            .collect();
+        if links.is_empty() {
+            return;
+        }
+        let joined = links.join("\n");
+        if ids.len() == 1 {
+            self.copied_link_feedback = Some((ids[0], Instant::now()));
+        }
+        self.clip_seen = Some(Some(joined.clone()));
+        crate::copy_text(ctx, joined);
+    }
+
+    /// Open `id`'s download link (or browser page for Service Worker / blob downloads) in the
+    /// default web browser so the user can re-fetch or visit the source page directly.
+    fn open_item_link(&self, id: u64) {
+        if let Some(link) = self
+            .items
+            .iter()
+            .find(|i| i.id == id)
+            .and_then(Item::primary_link)
+            && !crate::offscreen()
+        {
+            crate::launch::open(link);
+        }
+    }
+
     /// `target`: the right-clicked download, if any. Stop, Resume, Remove and the queue
     /// commands act on every selected download (or the right-clicked one outside the
     /// selection); the others on one download.
@@ -5810,11 +6014,41 @@ impl App {
                         .items
                         .iter()
                         .find(|i| i.id == id)
-                        .and_then(|i| i.context.referer.clone());
+                        .and_then(|i| i.source_page().map(str::to_owned));
                     if let Some(page) = page {
                         crate::launch::open(page);
                     }
                     self.properties(id);
+                }
+            }
+            Cmd::CopyLink => self.copy_item_links(&many, ctx),
+            Cmd::OpenLink => {
+                if let Some(id) = target {
+                    self.open_item_link(id);
+                }
+            }
+            Cmd::CopyReferer => {
+                if let Some(page) = target
+                    .and_then(|id| self.items.iter().find(|i| i.id == id))
+                    .and_then(|i| {
+                        i.distinct_source_page()
+                            .or_else(|| i.source_page().map(str::to_owned))
+                    })
+                {
+                    self.clip_seen = Some(Some(page.clone()));
+                    crate::copy_text(ctx, page);
+                }
+            }
+            Cmd::OpenReferer => {
+                if let Some(page) = target
+                    .and_then(|id| self.items.iter().find(|i| i.id == id))
+                    .and_then(|i| {
+                        i.distinct_source_page()
+                            .or_else(|| i.source_page().map(str::to_owned))
+                    })
+                    && !crate::offscreen()
+                {
+                    crate::launch::open(page);
                 }
             }
             Cmd::OpenWith => {
@@ -6752,6 +6986,9 @@ impl App {
                 && crate::extractq::archive_name(&i.file_name)
         });
         let torrent = it.and_then(|i| i.torrent.as_ref().map(|t| (i, t)));
+        let has_link = chosen.iter().any(|i| i.primary_link().is_some());
+        let single_link = it.and_then(Item::primary_link).is_some();
+        let source_page = it.and_then(Item::distinct_source_page);
         let mut entries = vec![
             // i18n: verb: opens the downloaded file
             I("Open", Cmd::Open, done, false),
@@ -6772,6 +7009,21 @@ impl App {
             I("Resume Download", Cmd::Resume, any_resumable, false),
             I("Stop Download", Cmd::Stop, any_live, false),
             Sep,
+            I(
+                crate::extension::bi("Sao chép link tải", "Copy download link"),
+                Cmd::CopyLink,
+                has_link,
+                false,
+            ),
+            I(
+                crate::extension::bi(
+                    "Mở link tải trong trình duyệt",
+                    "Open download link in browser",
+                ),
+                Cmd::OpenLink,
+                single_link,
+                false,
+            ),
             I(
                 "Refresh download address",
                 Cmd::RefreshAddress,
@@ -6812,6 +7064,36 @@ impl App {
             // i18n: noun: opens the download's Properties window
             I("Properties", Cmd::Properties, sel, false),
         ];
+        if source_page.is_some()
+            && let Some(at) = entries
+                .iter()
+                .position(|e| matches!(e, I(_, Cmd::OpenLink, ..)))
+        {
+            entries.insert(
+                at + 1,
+                I(
+                    crate::extension::bi("Sao chép link trang gốc", "Copy source page link"),
+                    Cmd::CopyReferer,
+                    true,
+                    false,
+                ),
+            );
+            entries.insert(
+                at + 2,
+                I(
+                    crate::extension::bi("Mở trang web gốc", "Open source web page"),
+                    Cmd::OpenReferer,
+                    true,
+                    false,
+                ),
+            );
+            entries.insert(at + 3, Sep);
+        } else if let Some(at) = entries
+            .iter()
+            .position(|e| matches!(e, I(_, Cmd::OpenLink, ..)))
+        {
+            entries.insert(at + 1, Sep);
+        }
         // A torrent's own actions (#39), after Verify checksum.
         if let Some((i, spec)) = torrent {
             let busy = self.torrent_host.busy(&spec.hash);
@@ -7478,6 +7760,15 @@ impl App {
         };
 
         // Download list.
+        if let Some((_, at)) = self.copied_link_feedback {
+            let elapsed = at.elapsed();
+            let window = Duration::from_millis(1600);
+            if elapsed < window {
+                ctx.request_repaint_after(window - elapsed);
+            } else {
+                self.copied_link_feedback = None;
+            }
+        }
         let (ids, rows) = self.list_rows();
         self.selection.retain(&ids);
         let (selected, focus) = self.selection.rows(&ids);
@@ -7541,6 +7832,16 @@ impl App {
         }
         if let Some(i) = r.properties {
             self.properties(ids[i]);
+        }
+        if let Some(i) = r.copy_link
+            && let Some(&id) = ids.get(i)
+        {
+            self.copy_item_links(&[id], ctx);
+        }
+        if let Some(i) = r.open_link
+            && let Some(&id) = ids.get(i)
+        {
+            self.open_item_link(id);
         }
         // A finished download: Open or Properties (IDM's default), as the context menu sets.
         if let Some(i) = r.double_clicked {
@@ -8356,10 +8657,9 @@ impl App {
     /// Can this download be fetched again from the start? A file download that isn't running
     /// (torrents re-check their data instead; a video's file is yt-dlp's to replace).
     fn can_redownload(&self, id: u64) -> bool {
-        self.items
-            .iter()
-            .find(|i| i.id == id)
-            .is_some_and(|i| i.live.is_none() && i.torrent.is_none() && i.video.is_none())
+        self.items.iter().find(|i| i.id == id).is_some_and(|i| {
+            i.live.is_none() && i.torrent.is_none() && i.video.is_none() && !i.is_browser_only_url()
+        })
     }
 
     /// Download again from the start: the partial state goes; a finished file is replaced when

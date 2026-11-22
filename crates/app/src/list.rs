@@ -413,6 +413,10 @@ pub struct Row {
     pub size_detail: String,
     /// Whether the inline row button can start or resume this download.
     pub can_resume: bool,
+    /// Actionable link shown as a clickable sub-line under File Name in modern rows.
+    pub link_url: String,
+    /// Briefly true right after copying this row's link so the pill shows feedback.
+    pub link_copied: bool,
     pub cells: [String; COLS],
 }
 
@@ -425,6 +429,10 @@ pub struct ListResponse {
     pub pick: Option<Pick>,
     /// Inline quick-action button clicked on this row (Pause / Resume / Open folder).
     pub row_action: Option<usize>,
+    /// Inline link clicked on this row (open download / source URL in browser).
+    pub open_link: Option<usize>,
+    /// Inline Copy pill or Ctrl+C triggered on this row.
+    pub copy_link: Option<usize>,
     /// Double-click on this row.
     pub double_clicked: Option<usize>,
     /// Enter on the focused row (Open, as its menu says, whatever a double-click does).
@@ -463,6 +471,12 @@ fn keyboard(
     if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
         st.focused = true;
         out.pick = Some(Pick::All);
+        return false;
+    }
+    if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::C)) {
+        if let Some(f) = focus {
+            out.copy_link = Some(f);
+        }
         return false;
     }
     if !st.focused {
@@ -941,6 +955,9 @@ pub fn show(
     let visible = (body.height() / row_h()).ceil() as usize + 1;
     let last_right = cols.last().map_or(cl, |s| s.2);
     let mut cut_under_pointer = None;
+    let mut hit_link: Option<usize> = None;
+    let mut hit_copy: Option<usize> = None;
+    let interact_pt = resp.interact_pointer_pos().map(english);
     let keys_in_use = winui::keyboard_in_use(ui.ctx());
     // A screen reader's row: the name, then Status and Size, selected or not, its place among all
     // the rows, where it is (out of view: above or below the list).
@@ -1094,18 +1111,55 @@ pub fn show(
                     let value = cell_text(0, &row.cells[0]);
                     let room = (x1 - tx - 10.0).max(0.0);
                     let s = winui::ellipsize(&bp, &font, &value, room);
+                    let has_sub_link = row.status_group != "Downloading"
+                        && !(row.status_group == "Stopped" && row.progress.is_some())
+                        && !row.link_url.is_empty()
+                        && room >= 84.0
+                        && row_h() >= 36.0;
+                    let has_bar = !has_sub_link
+                        && matches!(row.status_group, "Downloading" | "Stopped" | "Error")
+                        && (row.progress.is_some() || row.status_group == "Downloading");
+                    let name_y = if has_bar {
+                        top + 20.0
+                    } else if has_sub_link {
+                        top + 18.0
+                    } else {
+                        text_y
+                    };
+                    let name_ink = if sel { winui::SELECTION_TEXT() } else { TEXT() };
+                    text_font(&clip, font.clone(), tx, name_y, &s, name_ink);
+                    let mut sub_tip = None;
+                    if has_sub_link {
+                        let (clicked_link, clicked_copy, tip) = paint_sub_link(
+                            ui,
+                            &clip,
+                            row,
+                            (tx, *x1, top),
+                            room,
+                            picked,
+                            sel,
+                            hover_idx == Some(idx),
+                            hover_pt,
+                            interact_pt,
+                        );
+                        if clicked_link {
+                            hit_link = Some(idx);
+                        }
+                        if clicked_copy {
+                            hit_copy = Some(idx);
+                        }
+                        sub_tip = tip;
+                    }
                     if hover_pt.is_some_and(|h| cell.contains(h))
                         && action_rect(&cols, top, modern)
                             .is_none_or(|b| hover_pt.is_none_or(|hp| !b.contains(hp)))
-                        && s != value
                     {
-                        cut_under_pointer = Some(row.cells[0].clone());
+                        if let Some(tip) = sub_tip {
+                            cut_under_pointer = Some(tip);
+                        } else if s != value {
+                            cut_under_pointer = Some(row.cells[0].clone());
+                        }
                     }
-                    let has_bar = matches!(row.status_group, "Downloading" | "Stopped" | "Error")
-                        && (row.progress.is_some() || row.status_group == "Downloading");
-                    let name_y = if has_bar { top + 20.0 } else { text_y };
-                    let name_ink = if sel { winui::SELECTION_TEXT() } else { TEXT() };
-                    text_font(&clip, font.clone(), tx, name_y, &s, name_ink);
                     if has_bar && room > 24.0 {
                         let track =
                             Rect::from_min_size(pos2(tx, top + 29.0), egui::vec2(room, 6.0));
@@ -1351,6 +1405,18 @@ pub fn show(
             if let Some(i) = on_action_btn {
                 out.row_action = Some(i);
                 out.pick = Some(Pick::Only(i));
+            } else if !mods.command
+                && !mods.shift
+                && let Some(i) = hit_copy
+            {
+                out.copy_link = Some(i);
+                out.pick = Some(Pick::Only(i));
+            } else if !mods.command
+                && !mods.shift
+                && let Some(i) = hit_link
+            {
+                out.open_link = Some(i);
+                out.pick = Some(Pick::Only(i));
             } else {
                 // Windows: Ctrl+click puts a row in or out, Shift+click selects from the anchor,
                 // Ctrl+Shift+click adds that range; a click on blank space clears (not with Ctrl).
@@ -1363,7 +1429,11 @@ pub fn show(
                 };
             }
         }
-        if resp.double_clicked() && on_action_btn.is_none() {
+        if resp.double_clicked()
+            && on_action_btn.is_none()
+            && hit_copy.is_none()
+            && hit_link.is_none()
+        {
             out.double_clicked = row_at(pos);
         }
         if resp.secondary_clicked() {
@@ -1577,6 +1647,124 @@ fn action_tooltip(row: &Row) -> String {
         "Open folder"
     };
     crate::i18n::t(key).to_owned()
+}
+
+/// Paints the clickable download/source URL sub-line and 1-click Copy pill inside modern File Name cells.
+#[allow(clippy::too_many_arguments)]
+fn paint_sub_link(
+    ui: &Ui,
+    clip: &egui::Painter,
+    row: &Row,
+    bounds: (f32, f32, f32),
+    room: f32,
+    picked: bool,
+    sel: bool,
+    row_hovered: bool,
+    hover_pt: Option<Pos2>,
+    interact_pt: Option<Pos2>,
+) -> (bool, bool, Option<String>) {
+    let (tx, x1, top) = bounds;
+    let dark = crate::theme::dark_surface();
+    if row.status_group == "Error"
+        && let Some(pct) = row.progress.filter(|p| *p > 0.0)
+    {
+        let track = Rect::from_min_size(pos2(tx, top + 22.0), egui::vec2(room, 2.5));
+        clip.rect_filled(winui::rect(track), 1.25, crate::theme::colors().meter_track);
+        let fw = (room * pct.clamp(0.0, 1.0)).round().max(3.0);
+        let fill_rc = Rect::from_min_size(pos2(tx, top + 22.0), egui::vec2(fw, 2.5));
+        clip.rect_filled(winui::rect(fill_rc), 1.25, winui::ERROR());
+    }
+    let sub_font = egui::FontId::proportional(11.5);
+    let show_copy = row.status_group == "Error" || row.link_copied || row_hovered || picked;
+    let copy_label = if row.link_copied {
+        crate::extension::bi("✓ Đã chép", "✓ Copied")
+    } else {
+        crate::extension::bi("Sao chép", "Copy")
+    };
+    let copy_w =
+        (winui::text_width_font(clip, sub_font.clone(), copy_label).ceil() + 12.0).max(46.0);
+    let max_link_w = (room - if show_copy { copy_w + 8.0 } else { 0.0 }).max(32.0);
+    let link_shown = winui::ellipsize(
+        clip,
+        &sub_font,
+        &crate::i18n::ltr(&row.link_url),
+        max_link_w,
+    );
+    let link_w = winui::text_width_font(clip, sub_font.clone(), &link_shown)
+        .ceil()
+        .min(max_link_w);
+    let sub_y = top + 38.0;
+    let link_rc = Rect::from_min_size(pos2(tx, top + 25.5), egui::vec2(link_w, 17.0));
+    let link_hot = row_hovered && hover_pt.is_some_and(|hp| link_rc.contains(hp));
+    let link_ink = if row.status_group == "Error" || link_hot {
+        if dark {
+            Color32::from_rgb(96, 165, 250)
+        } else {
+            Color32::from_rgb(37, 99, 235)
+        }
+    } else if sel {
+        if dark {
+            Color32::from_rgb(147, 197, 253)
+        } else {
+            Color32::from_rgb(30, 64, 175)
+        }
+    } else {
+        SORT_ARROW()
+    };
+    text_font(clip, sub_font.clone(), tx, sub_y, &link_shown, link_ink);
+    let mut hover_tip = None;
+    if link_hot {
+        fill(clip, tx, sub_y + 2.0, tx + link_w, sub_y + 2.0, link_ink);
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        let err = row.cells[7].trim();
+        hover_tip = Some(if row.status_group == "Error" && !err.is_empty() {
+            format!("{err}\n{}", row.link_url)
+        } else {
+            row.link_url.clone()
+        });
+    }
+    let hit_link = interact_pt.is_some_and(|ip| link_rc.contains(ip));
+    let mut hit_copy = false;
+    if show_copy {
+        let cx0 = (tx + link_w + 6.0).min(x1 - copy_w - 10.0);
+        let copy_rc = Rect::from_min_size(pos2(cx0, top + 25.5), egui::vec2(copy_w, 17.0));
+        let copy_hot = row_hovered && hover_pt.is_some_and(|hp| copy_rc.contains(hp));
+        let (pill_bg, copy_ink) = if row.link_copied {
+            let c = if dark {
+                Color32::from_rgb(74, 222, 128)
+            } else {
+                Color32::from_rgb(21, 128, 61)
+            };
+            (c.gamma_multiply(0.16), c)
+        } else if copy_hot {
+            let c = if dark {
+                Color32::from_rgb(96, 165, 250)
+            } else {
+                Color32::from_rgb(29, 78, 216)
+            };
+            (c.gamma_multiply(0.20), c)
+        } else if dark {
+            (
+                Color32::from_rgba_unmultiplied(148, 163, 184, 34),
+                Color32::from_rgb(203, 213, 225),
+            )
+        } else {
+            (
+                Color32::from_rgba_unmultiplied(15, 23, 42, 18),
+                Color32::from_rgb(51, 65, 85),
+            )
+        };
+        clip.rect_filled(winui::rect(copy_rc), 8.5, pill_bg);
+        text_font(clip, sub_font, cx0 + 6.0, sub_y, copy_label, copy_ink);
+        if copy_hot {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            hover_tip = Some(
+                crate::extension::bi("Sao chép link tải (Ctrl+C)", "Copy link (Ctrl+C)").to_owned(),
+            );
+        }
+        hit_copy = interact_pt.is_some_and(|ip| copy_rc.contains(ip));
+    }
+    (hit_link, hit_copy, hover_tip)
 }
 
 /// Paints the circular FDM-style inline Pause / Resume / Open Folder button inside `rc` (English).
@@ -2084,6 +2272,8 @@ mod tests {
             progress: None,
             size_detail: String::new(),
             can_resume: false,
+            link_url: String::new(),
+            link_copied: false,
             cells,
         }
     }
