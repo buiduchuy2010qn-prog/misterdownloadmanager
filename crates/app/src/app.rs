@@ -7836,7 +7836,7 @@ impl App {
         if let Some(i) = r.copy_link
             && let Some(&id) = ids.get(i)
         {
-            self.copy_item_links(&[id], ctx);
+            self.copy_item_links(&[id], &ctx);
         }
         if let Some(i) = r.open_link
             && let Some(&id) = ids.get(i)
